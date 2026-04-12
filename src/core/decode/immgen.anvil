@@ -1,0 +1,80 @@
+import "../../types/pipeline.anvilh"
+import "./fields.anvil"
+
+// Immediate generation is pure combinational logic.
+// Each helper builds the raw immediate shape from the instruction encoding
+// and then sign-extends to XLEN.
+
+func sext12(raw : logic[12]) {
+    let base = <(raw)::xlen_t>;
+    if raw[11] == 1'b1 { base + <(64'hfffffffffffff000)::xlen_t> } else { base }
+}
+
+func sext8(raw : logic[8]) {
+    let base = <(raw)::xlen_t>;
+    if raw[7] == 1'b1 { base + <(64'hffffffffffffff00)::xlen_t> } else { base }
+}
+
+func sext16(raw : logic[16]) {
+    let base = <(raw)::xlen_t>;
+    if raw[15] == 1'b1 { base + <(64'hffffffffffff0000)::xlen_t> } else { base }
+}
+
+func sext13(raw : logic[13]) {
+    let base = <(raw)::xlen_t>;
+    if raw[12] == 1'b1 { base + <(64'hffffffffffffe000)::xlen_t> } else { base }
+}
+
+func sext21(raw : logic[21]) {
+    let base = <(raw)::xlen_t>;
+    if raw[20] == 1'b1 { base + <(64'hffffffffffe00000)::xlen_t> } else { base }
+}
+
+func sext32(raw : logic[32]) {
+    let base = <(raw)::xlen_t>;
+    if raw[31] == 1'b1 { base + <(64'hffffffff00000000)::xlen_t> } else { base }
+}
+
+func imm_i(instr : instr_t) {
+    call sext12(instr[20+:12])
+}
+
+func imm_shamt(instr : instr_t) {
+    // RV64 shift-immediate instructions use a zero-extended 6-bit shamt.
+    <(#{58'd0, instr[20+:6]})::xlen_t>
+}
+
+func imm_s(instr : instr_t) {
+    call sext12(#{instr[25+:7], instr[7+:5]})
+}
+
+func imm_b(instr : instr_t) {
+    call sext13(#{instr[31], instr[7], instr[25+:6], instr[8+:4], 1'b0})
+}
+
+func imm_u(instr : instr_t) {
+    call sext32(#{instr[12+:20], 12'd0})
+}
+
+func imm_j(instr : instr_t) {
+    call sext21(#{instr[31], instr[12+:8], instr[20], instr[21+:10], 1'b0})
+}
+
+func decode_imm(instr : instr_t) {
+    // Select the immediate format from the opcode class.
+    let opcode = call opcode_of(instr);
+    let funct3 = call funct3_of(instr);
+    if opcode == 7'b0010011 && (funct3 == 3'b001 || funct3 == 3'b101) { call imm_shamt(instr) }
+    else if opcode == 7'b0011011 && (funct3 == 3'b001 || funct3 == 3'b101) { call imm_shamt(instr) }
+    else if opcode == 7'b0010011 { call imm_i(instr) }
+    else if opcode == 7'b0011011 { call imm_i(instr) }
+    else if opcode == 7'b0000011 { call imm_i(instr) }
+    else if opcode == 7'b1100111 { call imm_i(instr) }
+    else if opcode == 7'b1110011 { call imm_i(instr) }
+    else if opcode == 7'b0100011 { call imm_s(instr) }
+    else if opcode == 7'b1100011 { call imm_b(instr) }
+    else if opcode == 7'b0110111 { call imm_u(instr) }
+    else if opcode == 7'b0010111 { call imm_u(instr) }
+    else if opcode == 7'b1101111 { call imm_j(instr) }
+    else { <(64'd0)::xlen_t> }
+}

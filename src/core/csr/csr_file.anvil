@@ -1,0 +1,126 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+import "../../types/riscv.anvilh"
+
+// Standalone CSR service used by the smaller smoke modules.
+//
+// This is intentionally separate from `csr_state.anvil`:
+// - `csr_state.anvil` is the pure architectural state model used by pipeline_core.
+// - this file is a channel-driven service block used for focused module tests.
+
+func csr_read_value(addr : csr_idx_t,
+                    mstatus : xlen_t,
+                    misa : xlen_t,
+                    mtvec : xlen_t,
+                    mscratch : xlen_t,
+                    mepc : xlen_t,
+                    mcause : xlen_t,
+                    mtval : xlen_t,
+                    mcycle : xlen_t,
+                    minstret : xlen_t) {
+    // Decode the requested CSR address and package the response.
+    // Unknown addresses return exc=1 so the caller can treat them as illegal.
+    if addr == call csr_mstatus_idx() { csr_read_resp_t::{val = mstatus; exc = 1'b0} }
+    else if addr == call csr_misa_idx() { csr_read_resp_t::{val = misa; exc = 1'b0} }
+    else if addr == call csr_mtvec_idx() { csr_read_resp_t::{val = mtvec; exc = 1'b0} }
+    else if addr == call csr_mscratch_idx() { csr_read_resp_t::{val = mscratch; exc = 1'b0} }
+    else if addr == call csr_mepc_idx() { csr_read_resp_t::{val = mepc; exc = 1'b0} }
+    else if addr == call csr_mcause_idx() { csr_read_resp_t::{val = mcause; exc = 1'b0} }
+    else if addr == call csr_mtval_idx() { csr_read_resp_t::{val = mtval; exc = 1'b0} }
+    else if addr == call csr_mcycle_idx() { csr_read_resp_t::{val = mcycle; exc = 1'b0} }
+    else if addr == call csr_minstret_idx() { csr_read_resp_t::{val = minstret; exc = 1'b0} }
+    else if addr == call csr_mhartid_idx() { csr_read_resp_t::{val = <(64'd0)::xlen_t>; exc = 1'b0} }
+    else { csr_read_resp_t::{val = <(64'd0)::xlen_t>; exc = 1'b1} }
+}
+
+proc CSRFile(read_in : left csr_read_ch,
+             write_in : left csr_write_ch) {
+    reg booted_q : logic;
+    reg mstatus_q : xlen_t;
+    reg misa_q : xlen_t;
+    reg mtvec_q : xlen_t;
+    reg mscratch_q : xlen_t;
+    reg mepc_q : xlen_t;
+    reg mcause_q : xlen_t;
+    reg mtval_q : xlen_t;
+    reg mcycle_q : xlen_t;
+    reg minstret_q : xlen_t;
+    reg read_addr_q : csr_idx_t;
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            // Read path:
+            // 1. capture the requested address,
+            // 2. wait the declared service latency,
+            // 3. respond using the current CSR contents.
+            let req = recv read_in.read_req >>
+            set read_addr_q := req.addr >>
+            cycle 1 >>
+            send read_in.read_resp(call csr_read_value(*read_addr_q,
+                                                       *mstatus_q,
+                                                       *misa_q,
+                                                       *mtvec_q,
+                                                       *mscratch_q,
+                                                       *mepc_q,
+                                                       *mcause_q,
+                                                       *mtval_q,
+                                                       *mcycle_q,
+                                                       *minstret_q))
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            // One-time initialization of the standalone CSR block.
+            {
+                set booted_q := 1'b1;
+                set mstatus_q := <(64'd0)::xlen_t>;
+                set misa_q := <(64'd0)::xlen_t>;
+                set mtvec_q := <(64'd0)::xlen_t>;
+                set mscratch_q := <(64'd0)::xlen_t>;
+                set mepc_q := <(64'd0)::xlen_t>;
+                set mcause_q := <(64'd0)::xlen_t>;
+                set mtval_q := <(64'd0)::xlen_t>;
+                set mcycle_q := <(64'd0)::xlen_t>;
+                set minstret_q := <(64'd0)::xlen_t>;
+                set read_addr_q := <(12'd0)::csr_idx_t>
+            } >>
+            cycle 1
+        } else {
+            {
+                // Write path and `mcycle` update run in the same loop so the
+                // standalone service always advances its cycle counter.
+                try wr = recv write_in.write_req {
+                    if wr.we == 1'b1 {
+                        // Only the small M1 subset is writable here.
+                        if wr.addr == call csr_mstatus_idx() {
+                            set mstatus_q := wr.val
+                        } else if wr.addr == call csr_mtvec_idx() {
+                            set mtvec_q := wr.val
+                        } else if wr.addr == call csr_mscratch_idx() {
+                            set mscratch_q := wr.val
+                        } else if wr.addr == call csr_mepc_idx() {
+                            set mepc_q := wr.val
+                        } else if wr.addr == call csr_mcause_idx() {
+                            set mcause_q := wr.val
+                        } else if wr.addr == call csr_mtval_idx() {
+                            set mtval_q := wr.val
+                        } else if wr.addr == call csr_minstret_idx() {
+                            set minstret_q := wr.val
+                        } else {
+                            ()
+                        }
+                    } else {
+                        ()
+                    }
+                } else {
+                    ()
+                };
+                // `mcycle` advances every service iteration.
+                set mcycle_q := *mcycle_q + <(64'd1)::xlen_t>
+            }
+        }
+    }
+}

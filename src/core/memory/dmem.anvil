@@ -1,0 +1,49 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+
+// Small standalone 4-word data memory used by the smokes.
+// Like the RegisterFile module, this is for modular testing; the integrated
+// M1 core keeps its tiny demo memory in local state.
+
+func dmem_bank_index(addr : xlen_t) {
+    addr[3+:2]
+}
+
+func dmem_read_word(idx : logic[2], w0 : xlen_t, w1 : xlen_t, w2 : xlen_t, w3 : xlen_t) {
+    if idx == 2'd0 { w0 }
+    else if idx == 2'd1 { w1 }
+    else if idx == 2'd2 { w2 }
+    else { w3 }
+}
+
+proc DataMemory(read_in : left dmem_read_ch,
+                write_in : left dmem_write_ch) {
+    reg w0_q : xlen_t;
+    reg w1_q : xlen_t;
+    reg w2_q : xlen_t;
+    reg w3_q : xlen_t;
+    reg read_data_q : xlen_t;
+
+    loop {
+        // Read path: select a bank and return the staged word.
+        let req = recv read_in.read_req >>
+        let idx = call dmem_bank_index(req.addr) >>
+        set read_data_q := call dmem_read_word(idx, *w0_q, *w1_q, *w2_q, *w3_q) >>
+        send read_in.read_resp(dmem_read_resp_t::{rdata = *read_data_q})
+    }
+
+    loop {
+        // Write path: update exactly one bank based on the low address bits.
+        let req = recv write_in.write_req >>
+        let idx = call dmem_bank_index(req.addr) >>
+        if idx == 2'd0 {
+            set w0_q := req.wdata
+        } else if idx == 2'd1 {
+            set w1_q := req.wdata
+        } else if idx == 2'd2 {
+            set w2_q := req.wdata
+        } else {
+            set w3_q := req.wdata
+        }
+    }
+}

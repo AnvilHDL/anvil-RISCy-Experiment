@@ -1,0 +1,46 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+
+// Standalone integer register file used by unit/integration smokes.
+// The integrated M1 core uses a smaller local `demo_regs_t` state instead so
+// the heavy top stays compiler-friendly.
+
+proc RegisterFile(read_in : left rf_read_ch,
+                  write_in : left rf_write_ch) {
+    reg regs : xlen_t[32];
+    reg rs1_data_q : xlen_t;
+    reg rs2_data_q : xlen_t;
+
+    loop {
+        // Reads are staged: capture selected register values, then return them
+        // on the declared response cycle.
+        let req = recv read_in.read_req >>
+        if req.rs1 == <(5'd0)::reg_idx_t> {
+            set rs1_data_q := <(64'd0)::xlen_t>
+        } else {
+            set rs1_data_q := *regs[req.rs1]
+        };
+        if req.rs2 == <(5'd0)::reg_idx_t> {
+            set rs2_data_q := <(64'd0)::xlen_t>
+        } else {
+            set rs2_data_q := *regs[req.rs2]
+        } >>
+        cycle 1 >>
+        send read_in.read_resp(rf_read_resp_t::{rs1_val = *rs1_data_q; rs2_val = *rs2_data_q})
+    }
+
+    loop {
+        // x0 is hardwired to zero by dropping writes to rd=0.
+        let wr = recv write_in.write_req >>
+        if wr.we == 1'b1 {
+            if wr.rd == <(5'd0)::reg_idx_t> {
+                ()
+            } else {
+                set regs[wr.rd] := wr.val
+            }
+        } else {
+            ()
+        } >>
+        cycle 1
+    }
+}

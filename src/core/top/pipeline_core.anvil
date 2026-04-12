@@ -1,0 +1,754 @@
+import "../../types/pipeline.anvilh"
+import "../fetch/bpred.anvil"
+import "../fetch/imem.anvil"
+import "../decode/id_stage.anvil"
+import "../decode/immgen.anvil"
+import "../execute/ex_stage.anvil"
+import "../execute/branch.anvil"
+import "../hazard/forward.anvil"
+import "../hazard/hazard.anvil"
+import "../memory/mem_stage.anvil"
+import "../writeback/wb.anvil"
+import "../csr/csr_state.anvil"
+import "./packet_utils.anvil"
+
+// This top is the integrated M1 acceptance core.
+//
+// Important structural choice:
+// - the pipeline packets remain typed structs because they are small and easy
+//   for the compiler to carry,
+// - the large architectural state that previously lived inside `core_state_t`
+//   is now split into direct regs inside the proc,
+// - GPRs and DMEM are array regs so the compiler does not need to inline
+//   enormous 31-arm / 15-arm struct-mux trees for every access.
+
+func mem_addr_in_range(addr : xlen_t) {
+    // DMEM is a 64 KiB byte-addressed window starting at address 0.
+    addr[16+:48] == 48'd0
+}
+
+func mem_access_ok(addr : xlen_t, funct3 : logic[3]) {
+    // Alignment depends on the access width encoded in `funct3`.
+    call mem_addr_in_range(addr) == 1'b1 &&
+    (if funct3 == 3'b000 || funct3 == 3'b100 { 1'b1 }
+     else if funct3 == 3'b001 || funct3 == 3'b101 { addr[0] == 1'b0 }
+     else if funct3 == 3'b010 || funct3 == 3'b110 { addr[0+:2] == 2'b00 }
+     else { addr[0+:3] == 3'b000 })
+}
+
+func lane_shift_amt(byte_offset : logic[3]) {
+    <(#{58'd0, byte_offset, 3'd0})::xlen_t>
+}
+
+func select_load_lane(mem_word : xlen_t, byte_offset : logic[3]) {
+    // DMEM stores aligned 64-bit words. Loads first shift the addressed lane
+    // down to bit 0, then apply width-specific sign/zero extension.
+    call shr_dyn(mem_word, call lane_shift_amt(byte_offset))
+}
+
+func apply_store_mask(old_word : xlen_t, new_data : xlen_t, funct3 : logic[3], byte_offset : logic[3]) {
+    if funct3 == 3'b000 {
+        let byte_mask =
+            if byte_offset == 3'd0 { <(64'h00000000000000ff)::xlen_t> }
+            else if byte_offset == 3'd1 { <(64'h000000000000ff00)::xlen_t> }
+            else if byte_offset == 3'd2 { <(64'h0000000000ff0000)::xlen_t> }
+            else if byte_offset == 3'd3 { <(64'h00000000ff000000)::xlen_t> }
+            else if byte_offset == 3'd4 { <(64'h000000ff00000000)::xlen_t> }
+            else if byte_offset == 3'd5 { <(64'h0000ff0000000000)::xlen_t> }
+            else if byte_offset == 3'd6 { <(64'h00ff000000000000)::xlen_t> }
+            else { <(64'hff00000000000000)::xlen_t> };
+        let shifted_data =
+            if byte_offset == 3'd0 { <(#{56'd0, new_data[0+:8]})::xlen_t> }
+            else if byte_offset == 3'd1 { <(#{48'd0, new_data[0+:8], 8'd0})::xlen_t> }
+            else if byte_offset == 3'd2 { <(#{40'd0, new_data[0+:8], 16'd0})::xlen_t> }
+            else if byte_offset == 3'd3 { <(#{32'd0, new_data[0+:8], 24'd0})::xlen_t> }
+            else if byte_offset == 3'd4 { <(#{24'd0, new_data[0+:8], 32'd0})::xlen_t> }
+            else if byte_offset == 3'd5 { <(#{16'd0, new_data[0+:8], 40'd0})::xlen_t> }
+            else if byte_offset == 3'd6 { <(#{8'd0, new_data[0+:8], 48'd0})::xlen_t> }
+            else { <(#{new_data[0+:8], 56'd0})::xlen_t> };
+        (old_word & ~byte_mask) | shifted_data
+    } else if funct3 == 3'b001 {
+        let hw_mask =
+            if byte_offset == 3'd0 { <(64'h000000000000ffff)::xlen_t> }
+            else if byte_offset == 3'd2 { <(64'h00000000ffff0000)::xlen_t> }
+            else if byte_offset == 3'd4 { <(64'h0000ffff00000000)::xlen_t> }
+            else { <(64'hffff000000000000)::xlen_t> };
+        let shifted =
+            if byte_offset == 3'd0 { <(#{48'd0, new_data[0+:16]})::xlen_t> }
+            else if byte_offset == 3'd2 { <(#{32'd0, new_data[0+:16], 16'd0})::xlen_t> }
+            else if byte_offset == 3'd4 { <(#{16'd0, new_data[0+:16], 32'd0})::xlen_t> }
+            else { <(#{new_data[0+:16], 48'd0})::xlen_t> };
+        (old_word & ~hw_mask) | shifted
+    } else if funct3 == 3'b010 {
+        let w_mask =
+            if byte_offset[2] == 1'b0 { <(64'h00000000ffffffff)::xlen_t> }
+            else { <(64'hffffffff00000000)::xlen_t> };
+        let shifted =
+            if byte_offset[2] == 1'b0 { <(#{32'd0, new_data[0+:32]})::xlen_t> }
+            else { <(#{new_data[0+:32], 32'd0})::xlen_t> };
+        (old_word & ~w_mask) | shifted
+    } else {
+        new_data
+    }
+}
+
+func fetch_packet(pc : xlen_t,
+                  instr : instr_t,
+                  predicted_taken : logic,
+                  predicted_target : xlen_t) {
+    if_id_pkt_t::{
+        valid = 1'b1;
+        fetched = fetch_pkt_t::{pc = pc; instr = instr};
+        predicted_taken = predicted_taken;
+        predicted_target = predicted_target;
+        cap_target_reg = <(5'd0)::reg_idx_t>;
+        cap_result = call zero_cap();
+        exc = call no_exc()
+    }
+}
+
+func build_capability(valid : logic,
+                      ctype : cap_type_t,
+                      cursor : xlen_t,
+                      base : xlen_t,
+                      end_ : xlen_t,
+                      perms : cap_perm_t,
+                      async : cap_async_t,
+                      reg_id : reg_idx_t) {
+    capability_t::{
+        valid = valid;
+        ctype = ctype;
+        cursor = cursor;
+        base = base;
+        end_ = end_;
+        perms = perms;
+        async = async;
+        reg_id = reg_id
+    }
+}
+
+func core_wb_fire(pkt : mem_wb_pkt_t) {
+    pkt.valid == 1'b1 &&
+    pkt.exc.has_exc == 1'b0 &&
+    pkt.ctrl.reg_write == 1'b1 &&
+    pkt.rd != <(5'd0)::reg_idx_t>
+}
+
+func core_trap_now(pkt : mem_wb_pkt_t) {
+    pkt.valid == 1'b1 && pkt.exc.has_exc == 1'b1
+}
+
+func core_trapped(csr : rv64i_csr_state_t) {
+    csr.mcause != <(64'd0)::xlen_t>
+}
+
+struct redirect_info_t {
+    redirect_now    : logic,
+    redirect_target : xlen_t
+}
+
+func core_branch_mispredict(id_ex : id_ex_pkt_t, br_res : branch_result_t) {
+    call bpred_is_control(id_ex.ctrl.branch_op) == 1'b1 &&
+    (br_res.taken != id_ex.predicted_taken ||
+     (br_res.taken == 1'b1 && br_res.target != id_ex.predicted_target))
+}
+
+func core_execute_packet(csr : rv64i_csr_state_t,
+                         id_ex : id_ex_pkt_t,
+                         ex_mem : ex_mem_pkt_t,
+                         mem_wb : mem_wb_pkt_t) {
+    if id_ex.valid == 1'b0 {
+        call bubble_ex_mem()
+    } else {
+        let fwd_rs1 = call forward_value(id_ex.rs1, id_ex.rs1_val, ex_mem, mem_wb);
+        let fwd_rs2 = call forward_value(id_ex.rs2, id_ex.rs2_val, ex_mem, mem_wb);
+        let is_csr_instr =
+            id_ex.valid == 1'b1 &&
+            id_ex.ctrl.is_system == 1'b1 &&
+            id_ex.instr[12+:3] != 3'b000;
+        let csr_funct3 = id_ex.instr[12+:3];
+        let csr_addr = <(id_ex.instr[20+:12])::csr_idx_t>;
+        let csr_old_val = call csr_read_field(csr, csr_addr);
+        let csr_operand =
+            if csr_funct3[2] == 1'b1 {
+                <(#{59'd0, <(id_ex.rs1)::logic[5]>})::xlen_t>
+            } else {
+                fwd_rs1
+            };
+        let csr_new_val =
+            if csr_funct3[0+:2] == 2'b01 { csr_operand }
+            else if csr_funct3[0+:2] == 2'b10 { csr_old_val | csr_operand }
+            else { csr_old_val & (~csr_operand) };
+        let csr_write_enable =
+            is_csr_instr &&
+            ~(csr_funct3[1] == 1'b1 && id_ex.rs1 == <(5'd0)::reg_idx_t>);
+        let ex_op_a =
+            if is_csr_instr == 1'b1 { csr_old_val }
+            else if id_ex.ctrl.src_a_pc == 1'b1 { id_ex.pc }
+            else { fwd_rs1 };
+        let ex_op_b =
+            if id_ex.ctrl.use_imm == 1'b1 { id_ex.imm } else { fwd_rs2 };
+        let ex_pkt_raw_base = call execute_stage(id_ex, ex_op_a, ex_op_b, fwd_rs1, fwd_rs2, fwd_rs2);
+        ex_mem_pkt_t::{
+            valid = ex_pkt_raw_base.valid;
+            pc = ex_pkt_raw_base.pc;
+            instr = ex_pkt_raw_base.instr;
+            rd = ex_pkt_raw_base.rd;
+            alu_result = ex_pkt_raw_base.alu_result;
+            store_data = ex_pkt_raw_base.store_data;
+            branch_taken = ex_pkt_raw_base.branch_taken;
+            branch_tgt = ex_pkt_raw_base.branch_tgt;
+            cap_target_reg = ex_pkt_raw_base.cap_target_reg;
+            cap_result = ex_pkt_raw_base.cap_result;
+            csr_addr = csr_addr;
+            csr_new_val = csr_new_val;
+            csr_we = if csr_write_enable == 1'b1 { 1'b1 } else { 1'b0 };
+            ctrl = ex_pkt_raw_base.ctrl;
+            exc = ex_pkt_raw_base.exc
+        }
+    }
+}
+
+func core_redirect_info(csr : rv64i_csr_state_t,
+                        id_ex : id_ex_pkt_t,
+                        ex_mem : ex_mem_pkt_t,
+                        mem_wb : mem_wb_pkt_t) {
+    let trap_now = call core_trap_now(mem_wb);
+    let fwd_rs1 = call forward_value(id_ex.rs1, id_ex.rs1_val, ex_mem, mem_wb);
+    let fwd_rs2 = call forward_value(id_ex.rs2, id_ex.rs2_val, ex_mem, mem_wb);
+    let mret_now =
+        id_ex.valid == 1'b1 &&
+        id_ex.ctrl.is_system == 1'b1 &&
+        call is_mret_instr(id_ex.instr);
+    let br_res = call branch_eval(id_ex.ctrl.branch_op, id_ex.pc, fwd_rs1, fwd_rs2, id_ex.imm);
+    let mispredict_now = call core_branch_mispredict(id_ex, br_res);
+    redirect_info_t::{
+        redirect_now =
+            if trap_now == 1'b1 || id_ex.exc.has_exc == 1'b1 { 1'b0 }
+            else if mret_now == 1'b1 { 1'b1 }
+            else { mispredict_now };
+        redirect_target =
+            if mret_now == 1'b1 { csr.mepc }
+            else if br_res.taken == 1'b1 { br_res.target }
+            else { call bpred_fallthrough(id_ex.pc) }
+    }
+}
+
+proc pipeline_core() {
+    reg booted_q : logic;
+    reg trace_enable_q : logic;
+    reg init_phase_q : logic[3];
+    reg init_gpr_idx_q : logic[5];
+    reg init_dmem_idx_q : logic[13];
+    reg init_imem_idx_q : logic[14];
+    reg init_bpred_idx_q : logic[6];
+
+    reg pc_q : xlen_t;
+    reg regs_q : xlen_t[32];
+    reg cap_reg_valid_q : logic[32];
+    reg cap_reg_ctype_q : cap_type_t[32];
+    reg cap_reg_cursor_q : xlen_t[32];
+    reg cap_reg_base_q : xlen_t[32];
+    reg cap_reg_end_q : xlen_t[32];
+    reg cap_reg_perms_q : cap_perm_t[32];
+    reg cap_reg_async_q : cap_async_t[32];
+    reg cap_reg_reg_id_q : reg_idx_t[32];
+    reg dmem_q : xlen_t[8192];
+    reg imem_q : instr_t[16384];
+    reg btb_q : btb_entry_t[64];
+    reg pht_q : pht_ctr_t[64];
+    reg csr_q : rv64i_csr_state_t;
+    reg if_id_q : if_id_pkt_t;
+    reg id_ex_q : id_ex_pkt_t;
+    reg ex_mem_q : ex_mem_pkt_t;
+    reg mem_wb_q : mem_wb_pkt_t;
+
+    loop {
+        if *booted_q == 1'b0 {
+            if *init_phase_q == 3'd0 {
+                if *init_gpr_idx_q == 5'd31 {
+                    {
+                        set regs_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_valid_q[*init_gpr_idx_q] := 1'b0;
+                        set cap_reg_ctype_q[*init_gpr_idx_q] := cap_type_t::CAP_LINEAR;
+                        set cap_reg_cursor_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_base_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_end_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_perms_q[*init_gpr_idx_q] := cap_perm_t::CAP_PERM_NONE;
+                        set cap_reg_async_q[*init_gpr_idx_q] := cap_async_t::CAP_ASYNC_SYNC;
+                        set cap_reg_reg_id_q[*init_gpr_idx_q] := <(5'd0)::reg_idx_t>;
+                        set init_gpr_idx_q := 5'd0;
+                        set init_phase_q := 3'd1
+                    }
+                } else {
+                    {
+                        set regs_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_valid_q[*init_gpr_idx_q] := 1'b0;
+                        set cap_reg_ctype_q[*init_gpr_idx_q] := cap_type_t::CAP_LINEAR;
+                        set cap_reg_cursor_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_base_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_end_q[*init_gpr_idx_q] := <(64'd0)::xlen_t>;
+                        set cap_reg_perms_q[*init_gpr_idx_q] := cap_perm_t::CAP_PERM_NONE;
+                        set cap_reg_async_q[*init_gpr_idx_q] := cap_async_t::CAP_ASYNC_SYNC;
+                        set cap_reg_reg_id_q[*init_gpr_idx_q] := <(5'd0)::reg_idx_t>;
+                        set init_gpr_idx_q := *init_gpr_idx_q + 5'd1
+                    }
+                }
+            } else if *init_phase_q == 3'd1 {
+                if *init_dmem_idx_q == 13'd8191 {
+                    {
+                        set dmem_q[*init_dmem_idx_q] := <(64'd0)::xlen_t>;
+                        set init_dmem_idx_q := 13'd0;
+                        set init_phase_q := 3'd2
+                    }
+                } else {
+                    {
+                        set dmem_q[*init_dmem_idx_q] := <(64'd0)::xlen_t>;
+                        set init_dmem_idx_q := *init_dmem_idx_q + 13'd1
+                    }
+                }
+            } else if *init_phase_q == 3'd2 {
+                if *init_imem_idx_q == 14'd16383 {
+                    {
+                        set imem_q[*init_imem_idx_q] := call demo_imem_word(*init_imem_idx_q);
+                        set init_imem_idx_q := 14'd0;
+                        set init_phase_q := 3'd3
+                    }
+                } else {
+                    {
+                        set imem_q[*init_imem_idx_q] := call demo_imem_word(*init_imem_idx_q);
+                        set init_imem_idx_q := *init_imem_idx_q + 14'd1
+                    }
+                }
+            } else if *init_phase_q == 3'd3 {
+                if *init_bpred_idx_q == 6'd63 {
+                    {
+                        set btb_q[*init_bpred_idx_q] := call bpred_reset_entry();
+                        set pht_q[*init_bpred_idx_q] := call bpred_reset_ctr();
+                        set init_bpred_idx_q := 6'd0;
+                        set init_phase_q := 3'd4
+                    }
+                } else {
+                    {
+                        set btb_q[*init_bpred_idx_q] := call bpred_reset_entry();
+                        set pht_q[*init_bpred_idx_q] := call bpred_reset_ctr();
+                        set init_bpred_idx_q := *init_bpred_idx_q + 6'd1
+                    }
+                }
+            } else {
+                {
+                    set pc_q := <(64'd0)::xlen_t>;
+                    set trace_enable_q := 1'b0;
+                    set csr_q := call csr_boot_state(<(64'd64)::xlen_t>);
+                    set if_id_q := call bubble_if_id();
+                    set id_ex_q := call bubble_id_ex();
+                    set ex_mem_q := call bubble_ex_mem();
+                    set mem_wb_q := call bubble_mem_wb();
+                    set booted_q := 1'b1
+                }
+            }
+        } else {
+            cycle 1
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_mem_wb = *mem_wb_q >>
+            let cur_csr = *csr_q >>
+            let next_csr = call core_csr_next(cur_csr, cur_mem_wb) >>
+            set csr_q := next_csr
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_mem_wb = *mem_wb_q >>
+            if call core_wb_fire(cur_mem_wb) == 1'b1 {
+                set regs_q[cur_mem_wb.rd] := call wb_value(cur_mem_wb)
+            } else {
+                cycle 1
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_mem_wb = *mem_wb_q >>
+            let cap_wb_rd = cur_mem_wb.cap_target_reg >>
+            let cap_wb_fire =
+                cur_mem_wb.valid == 1'b1 &&
+                cur_mem_wb.exc.has_exc == 1'b0 &&
+                cur_mem_wb.ctrl.cap_write == 1'b1 &&
+                cap_wb_rd != <(5'd0)::reg_idx_t> >>
+            if cap_wb_fire == 1'b1 {
+                {
+                    set cap_reg_valid_q[cap_wb_rd] := cur_mem_wb.cap_result.valid;
+                    set cap_reg_ctype_q[cap_wb_rd] := cur_mem_wb.cap_result.ctype;
+                    set cap_reg_cursor_q[cap_wb_rd] := cur_mem_wb.cap_result.cursor;
+                    set cap_reg_base_q[cap_wb_rd] := cur_mem_wb.cap_result.base;
+                    set cap_reg_end_q[cap_wb_rd] := cur_mem_wb.cap_result.end_;
+                    set cap_reg_perms_q[cap_wb_rd] := cur_mem_wb.cap_result.perms;
+                    set cap_reg_async_q[cap_wb_rd] := cur_mem_wb.cap_result.async;
+                    set cap_reg_reg_id_q[cap_wb_rd] := cur_mem_wb.cap_result.reg_id
+                }
+            } else {
+                cycle 1
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_ex_mem = *ex_mem_q >>
+            let cur_mem_wb = *mem_wb_q >>
+            let dmem_store_now =
+                cur_ex_mem.valid == 1'b1 &&
+                cur_ex_mem.exc.has_exc == 1'b0 &&
+                cur_ex_mem.ctrl.mem_write == 1'b1 &&
+                call mem_access_ok(cur_ex_mem.alu_result, cur_ex_mem.ctrl.mem_width) == 1'b1 >>
+            if dmem_store_now == 1'b1 {
+                let store_src_idx = cur_ex_mem.instr[20+:5] >>
+                let store_live_data =
+                    if store_src_idx == 5'd0 { <(64'd0)::xlen_t> }
+                    else if call core_wb_fire(cur_mem_wb) == 1'b1 &&
+                            cur_mem_wb.rd == <(store_src_idx)::reg_idx_t> {
+                        call wb_value(cur_mem_wb)
+                    } else {
+                        call copy(*regs_q[store_src_idx])
+                    } >>
+                let aligned_dmem_idx = cur_ex_mem.alu_result[3+:13] >>
+                let old_word = call copy(*dmem_q[aligned_dmem_idx]) >>
+                let store_masked =
+                    call apply_store_mask(old_word,
+                                          store_live_data,
+                                          cur_ex_mem.ctrl.mem_width,
+                                          cur_ex_mem.alu_result[0+:3]) >>
+                set dmem_q[aligned_dmem_idx] := store_masked
+            } else {
+                cycle 1
+            }
+        }
+    }
+
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_csr = *csr_q >>
+            if call core_trapped(cur_csr) == 1'b1 {
+                cycle 1
+            } else {
+                let cur_pc = *pc_q >>
+                let cur_if_id = *if_id_q >>
+                let cur_id_ex = *id_ex_q >>
+                let cur_ex_mem = *ex_mem_q >>
+                let cur_mem_wb = *mem_wb_q >>
+                let trap_now = call core_trap_now(cur_mem_wb) >>
+                let stall_now = call load_use_stall(cur_if_id, cur_id_ex) >>
+                let redirect = call core_redirect_info(cur_csr, cur_id_ex, cur_ex_mem, cur_mem_wb) >>
+                let bpred_idx = call bpred_index(cur_pc) >>
+                let btb_cur = call copy(*btb_q[bpred_idx]) >>
+                let pht_cur = call copy(*pht_q[bpred_idx]) >>
+                let pred = call bpred_lookup(cur_pc, btb_cur, pht_cur) >>
+                let imem_idx = <(cur_pc[2+:14])::logic[14]> >>
+                let fetch_instr = call copy(*imem_q[imem_idx]) >>
+                let next_if_id =
+                    if trap_now == 1'b1 || redirect.redirect_now == 1'b1 {
+                        call bubble_if_id()
+                    } else if stall_now == 1'b1 {
+                        cur_if_id
+                    } else {
+                        call fetch_packet(cur_pc,
+                                          fetch_instr,
+                                          pred.predicted_taken,
+                                          pred.predicted_target)
+                    } >>
+                let next_pc =
+                    if trap_now == 1'b1 {
+                        cur_pc
+                    } else if redirect.redirect_now == 1'b1 {
+                        redirect.redirect_target
+                    } else if stall_now == 1'b1 {
+                        cur_pc
+                    } else {
+                        pred.predicted_target
+                    } >>
+                {
+                    set pc_q := next_pc;
+                    set if_id_q := next_if_id
+                }
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_csr = *csr_q >>
+            if call core_trapped(cur_csr) == 1'b1 {
+                cycle 1
+            } else {
+                let cur_if_id = *if_id_q >>
+                let cur_id_ex = *id_ex_q >>
+                let cur_ex_mem = *ex_mem_q >>
+                let cur_mem_wb = *mem_wb_q >>
+                let trap_now = call core_trap_now(cur_mem_wb) >>
+                let stall_now = call load_use_stall(cur_if_id, cur_id_ex) >>
+                let redirect = call core_redirect_info(cur_csr, cur_id_ex, cur_ex_mem, cur_mem_wb) >>
+                let wb_fire = call core_wb_fire(cur_mem_wb) >>
+                let wb_data = call wb_value(cur_mem_wb) >>
+                let dec_rs1 = cur_if_id.fetched.instr[15+:5] >>
+                let dec_rs2 = cur_if_id.fetched.instr[20+:5] >>
+                let dec_rs1_raw =
+                    if dec_rs1 == 5'd0 { <(64'd0)::xlen_t> }
+                    else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs1)::reg_idx_t> { wb_data }
+                    else { call copy(*regs_q[dec_rs1]) } >>
+                let dec_rs2_raw =
+                    if dec_rs2 == 5'd0 { <(64'd0)::xlen_t> }
+                    else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs2)::reg_idx_t> { wb_data }
+                    else { call copy(*regs_q[dec_rs2]) } >>
+                let dec_cap_rs1_raw =
+                    if dec_rs1 == 5'd0 { call zero_cap() }
+                    else { call zero_cap() } >>
+                let dec_cap_rs2_raw =
+                    if dec_rs2 == 5'd0 { call zero_cap() }
+                    else { call zero_cap() } >>
+                let decoded_pkt =
+                    call decode_stage(cur_if_id,
+                                      dec_rs1_raw,
+                                      dec_rs2_raw,
+                                      dec_cap_rs1_raw,
+                                      dec_cap_rs2_raw) >>
+                let next_id_ex =
+                    if trap_now == 1'b1 || redirect.redirect_now == 1'b1 || stall_now == 1'b1 {
+                        call bubble_id_ex()
+                    } else {
+                        decoded_pkt
+                    } >>
+                set id_ex_q := next_id_ex
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_csr = *csr_q >>
+            if call core_trapped(cur_csr) == 1'b1 {
+                cycle 1
+            } else {
+                let cur_id_ex = *id_ex_q >>
+                let cur_ex_mem = *ex_mem_q >>
+                let cur_mem_wb = *mem_wb_q >>
+                let trap_now = call core_trap_now(cur_mem_wb) >>
+                let train_op =
+                    if cur_id_ex.valid == 1'b1 && cur_id_ex.exc.has_exc == 1'b0 {
+                        cur_id_ex.ctrl.branch_op
+                    } else {
+                        branch_op_t::BR_NONE
+                    } >>
+                let next_ex_mem =
+                    if trap_now == 1'b1 { call bubble_ex_mem() }
+                    else { call core_execute_packet(cur_csr, cur_id_ex, cur_ex_mem, cur_mem_wb) } >>
+                let bpred_idx = call bpred_index(cur_id_ex.pc) >>
+                let btb_cur = call copy(*btb_q[bpred_idx]) >>
+                let pht_cur = call copy(*pht_q[bpred_idx]) >>
+                let update =
+                    if trap_now == 1'b1 {
+                        bpred_update_t::{
+                            btb_we = 1'b0;
+                            btb_next = btb_cur;
+                            pht_we = 1'b0;
+                            pht_next = pht_cur
+                        }
+                    } else {
+                        call bpred_update(train_op,
+                                          cur_id_ex.pc,
+                                          next_ex_mem.branch_taken,
+                                          next_ex_mem.branch_tgt,
+                                          btb_cur,
+                                          pht_cur)
+                    } >>
+                {
+                    if update.btb_we == 1'b1 {
+                        set btb_q[bpred_idx] := update.btb_next
+                    } else {
+                        ()
+                    };
+                    if update.pht_we == 1'b1 {
+                        set pht_q[bpred_idx] := update.pht_next
+                    } else {
+                        ()
+                    };
+                    set ex_mem_q := next_ex_mem
+                }
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_csr = *csr_q >>
+            if call core_trapped(cur_csr) == 1'b1 {
+                cycle 1
+            } else {
+                let cur_ex_mem = *ex_mem_q >>
+                let cur_mem_wb = *mem_wb_q >>
+                let trap_now = call core_trap_now(cur_mem_wb) >>
+                let aligned_dmem_idx = cur_ex_mem.alu_result[3+:13] >>
+                let mem_word =
+                    if call mem_access_ok(cur_ex_mem.alu_result, cur_ex_mem.ctrl.mem_width) == 1'b1 {
+                        call copy(*dmem_q[aligned_dmem_idx])
+                    } else {
+                        <(64'd0)::xlen_t>
+                    } >>
+                let mem_lane = call select_load_lane(mem_word, cur_ex_mem.alu_result[0+:3]) >>
+                let mem_rdata =
+                    if cur_ex_mem.valid == 1'b1 &&
+                       cur_ex_mem.exc.has_exc == 1'b0 &&
+                       cur_ex_mem.ctrl.mem_write == 1'b1 {
+                        <(64'd0)::xlen_t>
+                    } else {
+                        mem_lane
+                    } >>
+                let load_funct3 = cur_ex_mem.ctrl.mem_width >>
+                let mem_rdata_sized =
+                    if load_funct3 == 3'b000 { call sext8(mem_rdata[0+:8]) }
+                    else if load_funct3 == 3'b001 { call sext16(mem_rdata[0+:16]) }
+                    else if load_funct3 == 3'b010 { call sext32(mem_rdata[0+:32]) }
+                    else if load_funct3 == 3'b100 { <(#{56'd0, mem_rdata[0+:8]})::xlen_t> }
+                    else if load_funct3 == 3'b101 { <(#{48'd0, mem_rdata[0+:16]})::xlen_t> }
+                    else if load_funct3 == 3'b110 { <(#{32'd0, mem_rdata[0+:32]})::xlen_t> }
+                    else { mem_rdata } >>
+                let next_mem_wb =
+                    if trap_now == 1'b1 { call bubble_mem_wb() }
+                    else { call memory_stage(cur_ex_mem, mem_rdata_sized) } >>
+                set mem_wb_q := next_mem_wb
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let trace_on = *trace_enable_q >>
+            if trace_on == 1'b1 {
+                let cur_pc = *pc_q >>
+                let cur_csr = *csr_q >>
+                let cur_if_id = *if_id_q >>
+                let cur_id_ex = *id_ex_q >>
+                let cur_ex_mem = *ex_mem_q >>
+                let cur_mem_wb = *mem_wb_q >>
+                let stall_now = call load_use_stall(cur_if_id, cur_id_ex) >>
+                let redirect = call core_redirect_info(cur_csr, cur_id_ex, cur_ex_mem, cur_mem_wb) >>
+                let wb_fire = call core_wb_fire(cur_mem_wb) >>
+                dprint "trace cyc=%d pc=%d stall=%d redir=%d wbfire=%d"
+                       (cur_csr.mcycle,
+                        cur_pc,
+                        stall_now,
+                        redirect.redirect_now,
+                        wb_fire) >>
+                dprint "trace pipe if=%d@%d id=%d@%d rd=%d ex=%d@%d rd=%d alu=%d mem=%d@%d wb=%d rd=%d"
+                       (cur_if_id.valid,
+                        cur_if_id.fetched.pc,
+                        cur_id_ex.valid,
+                        cur_id_ex.pc,
+                        <(cur_id_ex.rd)::xlen_t>,
+                        cur_ex_mem.valid,
+                        cur_ex_mem.pc,
+                        <(cur_ex_mem.rd)::xlen_t>,
+                        cur_ex_mem.alu_result,
+                        cur_mem_wb.valid,
+                        cur_mem_wb.pc,
+                        cur_mem_wb.valid,
+                        <(cur_mem_wb.rd)::xlen_t>) >>
+                cycle 1
+            } else {
+                cycle 1
+            }
+        }
+    }
+
+    loop {
+        if *booted_q == 1'b0 {
+            cycle 1
+        } else {
+            let cur_csr = *csr_q >>
+            let cur_mem_wb = *mem_wb_q >>
+            let ecall_now =
+                cur_mem_wb.valid == 1'b1 &&
+                cur_mem_wb.exc.has_exc == 1'b0 &&
+                call is_ecall_instr(cur_mem_wb.instr) == 1'b1 >>
+            if call core_trapped(cur_csr) == 1'b1 {
+                let x1 = call copy(*regs_q[5'd1]) >>
+                let x2 = call copy(*regs_q[5'd2]) >>
+                let x3 = call copy(*regs_q[5'd3]) >>
+                let x4 = call copy(*regs_q[5'd4]) >>
+                let x5 = call copy(*regs_q[5'd5]) >>
+                let x6 = call copy(*regs_q[5'd6]) >>
+                let x7 = call copy(*regs_q[5'd7]) >>
+                let x8 = call copy(*regs_q[5'd8]) >>
+                let x9 = call copy(*regs_q[5'd9]) >>
+                let x10 = call copy(*regs_q[5'ha]) >>
+                let d1 = call copy(*dmem_q[13'd1]) >>
+                let trap_pass =
+                    cur_csr.mcause == <(64'd2)::xlen_t> &&
+                    cur_csr.mepc == <(64'd56)::xlen_t> &&
+                    cur_csr.mtval == <(64'hffffffff)::xlen_t> &&
+                    cur_csr.minstret == <(64'd13)::xlen_t> &&
+                    x1 == <(64'd5)::xlen_t> &&
+                    x2 == <(64'd7)::xlen_t> &&
+                    x3 == <(64'd12)::xlen_t> &&
+                    x4 == <(64'd13)::xlen_t> &&
+                    x5 == <(64'd0)::xlen_t> &&
+                    x6 == <(64'd18)::xlen_t> &&
+                    x7 == <(64'd18)::xlen_t> &&
+                    x8 == <(64'd25)::xlen_t> &&
+                    x9 == <(64'd6)::xlen_t> &&
+                    x10 == <(64'd3)::xlen_t> &&
+                    d1 == <(64'd18)::xlen_t> >>
+                if trap_pass == 1'b1 {
+                    dprint "pipeline_core pass" () >>
+                    dfinish >>
+                    cycle 1
+                } else {
+                    dprint "trap state mcause=%d mepc=%d mtval=%d minstret=%d mcycle=%d"
+                           (cur_csr.mcause, cur_csr.mepc, cur_csr.mtval, cur_csr.minstret, cur_csr.mcycle) >>
+                    dprint "regs x1=%d x2=%d x3=%d x4=%d"
+                           (x1, x2, x3, x4) >>
+                    dprint "regs x5=%d x6=%d x7=%d x8=%d"
+                           (x5, x6, x7, x8) >>
+                    dprint "regs x7=%d x8=%d x9=%d x10=%d d1=%d"
+                           (x7, x8, x9, x10, d1) >>
+                    dprint "pipeline_core fail" () >>
+                    dfinish >>
+                    cycle 1
+                }
+            } else if ecall_now == 1'b1 {
+                dfinish >>
+                cycle 1
+            } else if cur_csr.mcycle > <(64'd100000)::xlen_t> {
+                dprint "pipeline_core timeout" () >>
+                dfinish >>
+                cycle 1
+            } else {
+                cycle 1
+            }
+        }
+    }
+}

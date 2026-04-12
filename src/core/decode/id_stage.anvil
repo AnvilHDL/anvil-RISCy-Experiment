@@ -1,0 +1,45 @@
+import "../../types/pipeline.anvilh"
+import "./fields.anvil"
+import "./immgen.anvil"
+import "./ctrl.anvil"
+import "../top/packet_utils.anvil"
+
+func decode_stage(pkt : if_id_pkt_t,
+                  rs1_val : xlen_t,
+                  rs2_val : xlen_t,
+                  cap_rs1_val : capability_t,
+                  cap_rs2_val : capability_t) {
+    if pkt.valid == 1'b0 {
+        // A bubble entering decode stays a bubble.
+        call bubble_id_ex()
+    } else {
+        let ctrl_dec = call decode_ctrl(pkt.fetched.instr);
+        let exc =
+            // Earlier exceptions win; otherwise decode can raise illegal-instr.
+            if pkt.exc.has_exc == 1'b1 { pkt.exc }
+            else if ctrl_dec.illegal == 1'b1 { call illegal_exc(pkt.fetched.instr) }
+            else { call no_exc() };
+        // ID/EX is the "fully decoded" packet: all structural decode work is done,
+        // and later stages should not need to revisit instruction bitfields except
+        // for a few special cases like MRET recognition.
+        id_ex_pkt_t::{
+            valid = pkt.valid;
+            pc = pkt.fetched.pc;
+            instr = pkt.fetched.instr;
+            rs1 = call rs1_of(pkt.fetched.instr);
+            rs2 = call rs2_of(pkt.fetched.instr);
+            rd = call rd_of(pkt.fetched.instr);
+            rs1_val = rs1_val;
+            rs2_val = rs2_val;
+            cap_rs1_val = cap_rs1_val;
+            cap_rs2_val = cap_rs2_val;
+            imm = call decode_imm(pkt.fetched.instr);
+            predicted_taken = pkt.predicted_taken;
+            predicted_target = pkt.predicted_target;
+            cap_target_reg = call rd_of(pkt.fetched.instr);
+            cap_result = pkt.cap_result;
+            ctrl = ctrl_dec.ctrl;
+            exc = exc
+        }
+    }
+}

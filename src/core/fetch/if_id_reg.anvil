@@ -1,0 +1,19 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+
+// Minimal standalone IF/ID latch used by the register-smoke integration.
+// The integrated M1 core keeps its stage packets in local `core_state_t`, but
+// these small register processes are still useful for timing-focused tests.
+
+proc IF_ID_Register(stage_in : left pipe_reg_ch<if_id_pkt_t>) {
+    reg data_q : if_id_pkt_t;
+
+    loop {
+        // The channel contract says:
+        // - write_req provides the next packet this cycle
+        // - read_resp returns the latched packet next cycle
+        let next_pkt = recv stage_in.write_req >>
+        set data_q := next_pkt >>
+        send stage_in.read_resp(*data_q)
+    }
+}

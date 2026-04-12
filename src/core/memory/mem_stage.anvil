@@ -1,0 +1,28 @@
+import "../../types/pipeline.anvilh"
+import "../top/packet_utils.anvil"
+
+// MEM itself is intentionally thin in M1.
+// The actual memory read/write side effects are computed around this helper;
+// this function just moves the chosen memory data into the MEM/WB packet.
+
+func memory_stage(pkt : ex_mem_pkt_t, mem_data : xlen_t) {
+    if pkt.valid == 1'b0 {
+        call bubble_mem_wb()
+    } else {
+        mem_wb_pkt_t::{
+            valid = pkt.valid;
+            pc = pkt.pc;
+            instr = pkt.instr;
+            rd = pkt.rd;
+            alu_result = pkt.alu_result;
+            mem_data = mem_data;
+            cap_target_reg = pkt.cap_target_reg;
+            cap_result = pkt.cap_result;
+            csr_addr = pkt.csr_addr;
+            csr_new_val = pkt.csr_new_val;
+            csr_we = pkt.csr_we;
+            ctrl = pkt.ctrl;
+            exc = pkt.exc
+        }
+    }
+}

@@ -1,0 +1,18 @@
+import "../../types/pipeline.anvilh"
+import "../writeback/wb.anvil"
+
+// Forwarding priority is EX/MEM first, then MEM/WB.
+// Loads in EX/MEM are excluded because their data is not ready yet; those are
+// handled by the load-use stall instead.
+
+func forward_value(idx : reg_idx_t, reg_val : xlen_t, ex_mem_pkt : ex_mem_pkt_t, mem_wb_pkt : mem_wb_pkt_t) {
+    if idx == <(5'd0)::reg_idx_t> { reg_val }
+    else if ex_mem_pkt.valid == 1'b1 && ex_mem_pkt.ctrl.reg_write == 1'b1 && ex_mem_pkt.ctrl.mem_read == 1'b0 && ex_mem_pkt.rd == idx {
+        if ex_mem_pkt.ctrl.wb_sel == wb_sel_t::WB_PC4 { ex_mem_pkt.pc + <(64'd4)::xlen_t> }
+        else { ex_mem_pkt.alu_result }
+    } else if mem_wb_pkt.valid == 1'b1 && mem_wb_pkt.ctrl.reg_write == 1'b1 && mem_wb_pkt.rd == idx {
+        call wb_value(mem_wb_pkt)
+    } else {
+        reg_val
+    }
+}

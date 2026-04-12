@@ -1,0 +1,140 @@
+import "../../types/pipeline.anvilh"
+import "../../types/riscv.anvilh"
+import "../decode/immgen.anvil"
+
+// The integrated M1 core does not use the standalone CSR service for its real
+// state updates. Instead it keeps architectural CSR state as a pure struct and
+// applies small state-transition helpers once per core step.
+
+struct rv64i_csr_state_t {
+    mstatus  : xlen_t,
+    misa     : xlen_t,
+    mtvec    : xlen_t,
+    mscratch : xlen_t,
+    mepc     : xlen_t,
+    mcause   : xlen_t,
+    mtval    : xlen_t,
+    mcycle   : xlen_t,
+    minstret : xlen_t,
+    mhartid  : xlen_t
+}
+
+func csr_boot_state(mtvec : xlen_t) {
+    // `mtvec` is parameterized so tests can choose the trap entry point easily.
+    rv64i_csr_state_t::{
+        mstatus = <(64'd0)::xlen_t>;
+        misa = <(64'd0)::xlen_t>;
+        mtvec = mtvec;
+        mscratch = <(64'd0)::xlen_t>;
+        mepc = <(64'd0)::xlen_t>;
+        mcause = <(64'd0)::xlen_t>;
+        mtval = <(64'd0)::xlen_t>;
+        mcycle = <(64'd0)::xlen_t>;
+        minstret = <(64'd0)::xlen_t>;
+        mhartid = <(64'd0)::xlen_t>
+    }
+}
+
+func csr_advance_cycle(state : rv64i_csr_state_t) {
+    // `mcycle` advances every core step, regardless of retirement.
+    rv64i_csr_state_t::{
+        mstatus = state.mstatus;
+        misa = state.misa;
+        mtvec = state.mtvec;
+        mscratch = state.mscratch;
+        mepc = state.mepc;
+        mcause = state.mcause;
+        mtval = state.mtval;
+        mcycle = state.mcycle + <(64'd1)::xlen_t>;
+        minstret = state.minstret;
+        mhartid = state.mhartid
+    }
+}
+
+func csr_note_retire(state : rv64i_csr_state_t) {
+    // `minstret` increments only for non-exception retirement.
+    rv64i_csr_state_t::{
+        mstatus = state.mstatus;
+        misa = state.misa;
+        mtvec = state.mtvec;
+        mscratch = state.mscratch;
+        mepc = state.mepc;
+        mcause = state.mcause;
+        mtval = state.mtval;
+        mcycle = state.mcycle;
+        minstret = state.minstret + <(64'd1)::xlen_t>;
+        mhartid = state.mhartid
+    }
+}
+
+func csr_take_exception(state : rv64i_csr_state_t, pc : xlen_t, exc : exc_info_t) {
+    // Precise trap retirement writes mepc/mcause/mtval at the point the
+    // faulting instruction reaches WB.
+    rv64i_csr_state_t::{
+        mstatus = state.mstatus;
+        misa = state.misa;
+        mtvec = state.mtvec;
+        mscratch = state.mscratch;
+        mepc = pc;
+        mcause = <(#{58'd0, exc.cause})::xlen_t>;
+        mtval = exc.tval;
+        mcycle = state.mcycle;
+        minstret = state.minstret;
+        mhartid = state.mhartid
+    }
+}
+
+func csr_read_field(state : rv64i_csr_state_t, addr : csr_idx_t) {
+    if addr == call csr_mstatus_idx() { state.mstatus }
+    else if addr == call csr_misa_idx() { state.misa }
+    else if addr == call csr_mtvec_idx() { state.mtvec }
+    else if addr == call csr_mscratch_idx() { state.mscratch }
+    else if addr == call csr_mepc_idx() { state.mepc }
+    else if addr == call csr_mcause_idx() { state.mcause }
+    else if addr == call csr_mtval_idx() { state.mtval }
+    else if addr == call csr_mcycle_idx() { state.mcycle }
+    else if addr == call csr_minstret_idx() { state.minstret }
+    else if addr == call csr_mhartid_idx() { <(64'd0)::xlen_t> }
+    else { <(64'd0)::xlen_t> }
+}
+
+func csr_write_field(state : rv64i_csr_state_t, addr : csr_idx_t, val : xlen_t) {
+    rv64i_csr_state_t::{
+        mstatus = if addr == call csr_mstatus_idx() { val } else { state.mstatus };
+        misa = state.misa;
+        mtvec = if addr == call csr_mtvec_idx() { val } else { state.mtvec };
+        mscratch = if addr == call csr_mscratch_idx() { val } else { state.mscratch };
+        mepc = if addr == call csr_mepc_idx() { val } else { state.mepc };
+        mcause = if addr == call csr_mcause_idx() { val } else { state.mcause };
+        mtval = if addr == call csr_mtval_idx() { val } else { state.mtval };
+        mcycle = state.mcycle;
+        minstret = if addr == call csr_minstret_idx() { val } else { state.minstret };
+        mhartid = state.mhartid
+    }
+}
+
+func core_csr_next(csr : rv64i_csr_state_t, pkt : mem_wb_pkt_t) {
+    let after_cycle = call csr_advance_cycle(csr);
+    let after_csr_write =
+        if pkt.csr_we == 1'b1 && pkt.exc.has_exc == 1'b0 {
+            call csr_write_field(after_cycle, pkt.csr_addr, pkt.csr_new_val)
+        } else {
+            after_cycle
+        };
+    if call core_trap_now(pkt) == 1'b1 {
+        call csr_take_exception(after_csr_write, pkt.pc, pkt.exc)
+    } else if pkt.valid == 1'b1 {
+        call csr_note_retire(after_csr_write)
+    } else {
+        after_csr_write
+    }
+}
+
+func is_mret_instr(instr : instr_t) {
+    // MRET is recognized late in M1 using the raw instruction word.
+    instr == <(32'h30200073)::instr_t>
+}
+
+func is_ecall_instr(instr : instr_t) {
+    instr == <(32'h00000073)::instr_t>
+}

@@ -1,0 +1,23 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+import "../../types/riscv.anvilh"
+
+// Small standalone exception redirector used by smoke_top.
+// The integrated M1 core retires exceptions through `csr_state` inside
+// pipeline_core instead of spawning this process.
+
+proc ExceptionUnit(exc_in : left exc_fire_ch,
+                   redirect_out : right redirect_ch,
+                   csr_write_out : right csr_write_ch) {
+    loop {
+        let exc = recv exc_in.exc >>
+        if exc.has_exc == 1'b1 {
+            // For the smoke, only mcause and the redirect are modeled here.
+            send csr_write_out.write_req(csr_write_req_t::{we = 1'b1; addr = call csr_mcause_idx(); val = <(#{58'd0, exc.cause})::xlen_t>});
+            send redirect_out.target(<(64'd0)::xlen_t>)
+        } else {
+            ()
+        } >>
+        cycle 1
+    }
+}

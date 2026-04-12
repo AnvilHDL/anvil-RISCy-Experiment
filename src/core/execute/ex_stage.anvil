@@ -1,0 +1,41 @@
+import "../../types/pipeline.anvilh"
+import "./alu.anvil"
+import "./branch.anvil"
+import "./cap_alu.anvil"
+import "../top/packet_utils.anvil"
+
+// EX consumes the fully decoded packet plus already-selected operands.
+// Forwarding and operand muxing happen outside this helper; this function only
+// applies the ALU and branch rules and repackages the result.
+
+func execute_stage(pkt : id_ex_pkt_t,
+                   op_a : xlen_t,
+                   op_b : xlen_t,
+                   branch_rs1 : xlen_t,
+                   branch_rs2 : xlen_t,
+                   store_data : xlen_t) {
+    if pkt.valid == 1'b0 {
+        call bubble_ex_mem()
+    } else {
+        let alu_res = call alu_exec(pkt.ctrl.alu_op, op_a, op_b);
+        let br_res = call branch_eval(pkt.ctrl.branch_op, pkt.pc, branch_rs1, branch_rs2, pkt.imm);
+        let cap_res = call cap_alu_exec(pkt.ctrl.cap_op, pkt.cap_rs1_val, pkt.cap_rs2_val, op_b);
+        ex_mem_pkt_t::{
+            valid = pkt.valid;
+            pc = pkt.pc;
+            instr = pkt.instr;
+            rd = pkt.rd;
+            alu_result = alu_res.result;
+            store_data = store_data;
+            branch_taken = br_res.taken;
+            branch_tgt = br_res.target;
+            cap_target_reg = pkt.cap_target_reg;
+            cap_result = cap_res;
+            csr_addr = <(12'd0)::csr_idx_t>;
+            csr_new_val = <(64'd0)::xlen_t>;
+            csr_we = 1'b0;
+            ctrl = pkt.ctrl;
+            exc = pkt.exc
+        }
+    }
+}

@@ -1,0 +1,233 @@
+import "../../types/pipeline.anvilh"
+
+// The ALU is pure combinational logic.
+//
+// Implementation-plan alignment:
+// - dynamic shifts now rely on compiler builtins `shl_dyn` / `shr_dyn` /
+//   `sra_dyn` instead of enormous hand-unrolled if-else ladders,
+// - W-ops keep their own 5-bit shamt handling and 32-bit sign-extension
+//   behavior.
+
+func signed_lt(lhs : xlen_t, rhs : xlen_t) {
+    if lhs[63] != rhs[63] { lhs[63] }
+    else { lhs < rhs }
+}
+
+func signed_ge(lhs : xlen_t, rhs : xlen_t) {
+    if call signed_lt(lhs, rhs) == 1'b1 { 1'b0 } else { 1'b1 }
+}
+
+func shamt6(rhs : xlen_t) {
+    rhs[0+:6]
+}
+
+func shamt5(rhs : xlen_t) {
+    rhs[0+:5]
+}
+
+func sext32_result(raw : logic[32]) {
+    let base = <(raw)::xlen_t>;
+    if raw[31] == 1'b1 { base + <(64'hffffffff00000000)::xlen_t> } else { base }
+}
+
+func zext32_to_xlen(v : logic[32]) {
+    <(#{32'd0, v})::xlen_t>
+}
+
+func zext16_to_xlen(v : logic[16]) {
+    <(#{48'd0, v})::xlen_t>
+}
+
+func shr16(v : xlen_t) {
+    <(#{16'd0, v[16+:48]})::xlen_t>
+}
+
+func xlen_from_limbs16(l0 : logic[16], l1 : logic[16], l2 : logic[16], l3 : logic[16]) {
+    <(#{l3, l2, l1, l0})::xlen_t>
+}
+
+struct mul_parts_t {
+    lo : xlen_t,
+    hi : xlen_t
+}
+
+func mul16_u(a : logic[16], b : logic[16]) {
+    // Anvil widens `*` to the sum of operand widths, so explicitly slice the
+    // low 64 bits back out to keep the helper's type small and predictable.
+    let a64 = call zext16_to_xlen(a);
+    let b64 = call zext16_to_xlen(b);
+    let product = a64 * b64;
+    <(product[0+:64])::xlen_t>
+}
+
+func mul_u64_parts(lhs : xlen_t, rhs : xlen_t) {
+    let a0 = lhs[0+:16];
+    let a1 = lhs[16+:16];
+    let a2 = lhs[32+:16];
+    let a3 = lhs[48+:16];
+    let b0 = rhs[0+:16];
+    let b1 = rhs[16+:16];
+    let b2 = rhs[32+:16];
+    let b3 = rhs[48+:16];
+
+    let p00 = call mul16_u(a0, b0);
+    let p01 = call mul16_u(a0, b1);
+    let p02 = call mul16_u(a0, b2);
+    let p03 = call mul16_u(a0, b3);
+    let p10 = call mul16_u(a1, b0);
+    let p11 = call mul16_u(a1, b1);
+    let p12 = call mul16_u(a1, b2);
+    let p13 = call mul16_u(a1, b3);
+    let p20 = call mul16_u(a2, b0);
+    let p21 = call mul16_u(a2, b1);
+    let p22 = call mul16_u(a2, b2);
+    let p23 = call mul16_u(a2, b3);
+    let p30 = call mul16_u(a3, b0);
+    let p31 = call mul16_u(a3, b1);
+    let p32 = call mul16_u(a3, b2);
+    let p33 = call mul16_u(a3, b3);
+
+    let s0 = p00;
+    let r0 = s0[0+:16];
+    let c0 = call shr16(s0);
+
+    let s1 = c0 + p01 + p10;
+    let r1 = s1[0+:16];
+    let c1 = call shr16(s1);
+
+    let s2 = c1 + p02 + p11 + p20;
+    let r2 = s2[0+:16];
+    let c2 = call shr16(s2);
+
+    let s3 = c2 + p03 + p12 + p21 + p30;
+    let r3 = s3[0+:16];
+    let c3 = call shr16(s3);
+
+    let s4 = c3 + p13 + p22 + p31;
+    let r4 = s4[0+:16];
+    let c4 = call shr16(s4);
+
+    let s5 = c4 + p23 + p32;
+    let r5 = s5[0+:16];
+    let c5 = call shr16(s5);
+
+    let s6 = c5 + p33;
+    let r6 = s6[0+:16];
+    let c6 = call shr16(s6);
+
+    mul_parts_t::{
+        lo = call xlen_from_limbs16(r0, r1, r2, r3);
+        hi = call xlen_from_limbs16(r4, r5, r6, c6[0+:16])
+    }
+}
+
+func mul_low(lhs : xlen_t, rhs : xlen_t) {
+    let parts = call mul_u64_parts(lhs, rhs);
+    parts.lo
+}
+
+func mulhu(lhs : xlen_t, rhs : xlen_t) {
+    let parts = call mul_u64_parts(lhs, rhs);
+    parts.hi
+}
+
+func mulhsu(lhs : xlen_t, rhs : xlen_t) {
+    let unsigned_hi = call mulhu(lhs, rhs);
+    if lhs[63] == 1'b1 { unsigned_hi - rhs } else { unsigned_hi }
+}
+
+func mulh(lhs : xlen_t, rhs : xlen_t) {
+    let unsigned_hi = call mulhu(lhs, rhs);
+    let lhs_corr = if lhs[63] == 1'b1 { rhs } else { <(64'd0)::xlen_t> };
+    let rhs_corr = if rhs[63] == 1'b1 { lhs } else { <(64'd0)::xlen_t> };
+    unsigned_hi - lhs_corr - rhs_corr
+}
+
+func mulw(lhs : xlen_t, rhs : xlen_t) {
+    call sext32_result(call mul_low(lhs, rhs)[0+:32])
+}
+
+func logical_shl(lhs : xlen_t, rhs : xlen_t) {
+    call shl_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>)
+}
+
+func logical_shr(lhs : xlen_t, rhs : xlen_t) {
+    call shr_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>)
+}
+
+func sra_fill_mask_64(rhs : xlen_t) {
+    let shamt = <(#{58'd0, call shamt6(rhs)})::xlen_t>;
+    if call shamt6(rhs) == 6'd0 {
+        <(64'd0)::xlen_t>
+    } else {
+        ~(call shr_dyn(<(64'hffffffffffffffff)::xlen_t>, shamt))
+    }
+}
+
+func arithmetic_shr(lhs : xlen_t, rhs : xlen_t) {
+    let logical = call shr_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>);
+    if lhs[63] == 1'b1 { logical | call sra_fill_mask_64(rhs) } else { logical }
+}
+
+func logical_shl_32(lhs : xlen_t, rhs : xlen_t) {
+    call shl_dyn(lhs, <(#{59'd0, call shamt5(rhs)})::xlen_t>)
+}
+
+func logical_shr_32(lhs : xlen_t, rhs : xlen_t) {
+    call shr_dyn(lhs, <(#{59'd0, call shamt5(rhs)})::xlen_t>)
+}
+
+func sra_fill_mask_32(rhs : xlen_t) {
+    let shamt = <(#{59'd0, call shamt5(rhs)})::xlen_t>;
+    if call shamt5(rhs) == 5'd0 {
+        <(64'd0)::xlen_t>
+    } else {
+        ~(call shr_dyn(<(64'hffffffffffffffff)::xlen_t>, shamt))
+    }
+}
+
+func arithmetic_shr_32(lhs : xlen_t, rhs : xlen_t) {
+    let logical = call shr_dyn(lhs, <(#{59'd0, call shamt5(rhs)})::xlen_t>);
+    if lhs[63] == 1'b1 { logical | call sra_fill_mask_32(rhs) } else { logical }
+}
+
+func alu_exec(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
+    // `result` is the architectural value; `zero` and `negative` are useful
+    // side channels for later refinements and branch/control experiments.
+    let result =
+        if op == alu_op_t::ALU_ADD { lhs + rhs }
+        else if op == alu_op_t::ALU_SUB { lhs - rhs }
+        else if op == alu_op_t::ALU_AND { lhs & rhs }
+        else if op == alu_op_t::ALU_OR { lhs | rhs }
+        else if op == alu_op_t::ALU_XOR { lhs ^ rhs }
+        else if op == alu_op_t::ALU_SLL { call logical_shl(lhs, rhs) }
+        else if op == alu_op_t::ALU_SRL { call logical_shr(lhs, rhs) }
+        else if op == alu_op_t::ALU_SRA { call arithmetic_shr(lhs, rhs) }
+        else if op == alu_op_t::ALU_SLT { <(#{63'd0, call signed_lt(lhs, rhs)})::xlen_t> }
+        else if op == alu_op_t::ALU_SLTU { <(#{63'd0, lhs < rhs})::xlen_t> }
+        else if op == alu_op_t::ALU_COPY_A { lhs }
+        else if op == alu_op_t::ALU_COPY_B { rhs }
+        else if op == alu_op_t::ALU_MUL { call mul_low(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULH { call mulh(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULHSU { call mulhsu(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULHU { call mulhu(lhs, rhs) }
+        else if op == alu_op_t::ALU_ADDW { call sext32_result(<(lhs[0+:32] + rhs[0+:32])::logic[32]>) }
+        else if op == alu_op_t::ALU_SUBW { call sext32_result(<(lhs[0+:32] - rhs[0+:32])::logic[32]>) }
+        else if op == alu_op_t::ALU_SLLW {
+            let lhs32 = <(#{32'd0, lhs[0+:32]})::xlen_t>;
+            let shifted32 = call logical_shl_32(lhs32, rhs);
+            call sext32_result(shifted32[0+:32])
+        }
+        else if op == alu_op_t::ALU_SRLW {
+            let lhs32 = <(#{32'd0, lhs[0+:32]})::xlen_t>;
+            let shifted32 = call logical_shr_32(lhs32, rhs);
+            call sext32_result(shifted32[0+:32])
+        }
+        else if op == alu_op_t::ALU_SRAW {
+            let sex32 = call sext32_result(lhs[0+:32]);
+            call arithmetic_shr_32(sex32, rhs)
+        }
+        else if op == alu_op_t::ALU_MULW { call mulw(lhs, rhs) }
+        else { rhs };
+    alu_result_t::{result = result; zero = (result == <(64'd0)::xlen_t>); negative = result[63]}
+}

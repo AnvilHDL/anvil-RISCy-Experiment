@@ -1,0 +1,26 @@
+import "../../types/pipeline.anvilh"
+import "./alu.anvil"
+
+// Branch/jump evaluation is kept separate from the ALU so EX can reason about
+// dataflow and control-flow independently.
+
+func branch_eval(op : branch_op_t, pc : xlen_t, rs1_val : xlen_t, rs2_val : xlen_t, imm : xlen_t) {
+    let target =
+        if op == branch_op_t::BR_JAL { pc + imm }
+        else if op == branch_op_t::BR_JALR { (rs1_val + imm) & <(64'hfffffffffffffffe)::xlen_t> }
+        else if op == branch_op_t::BR_CJALR { (rs1_val + imm) & <(64'hfffffffffffffffe)::xlen_t> }
+        else { pc + imm };
+    let taken =
+        if op == branch_op_t::BR_EQ { rs1_val == rs2_val }
+        else if op == branch_op_t::BR_NE { rs1_val != rs2_val }
+        else if op == branch_op_t::BR_LT { call signed_lt(rs1_val, rs2_val) }
+        else if op == branch_op_t::BR_GE { call signed_ge(rs1_val, rs2_val) }
+        else if op == branch_op_t::BR_LTU { rs1_val < rs2_val }
+        else if op == branch_op_t::BR_GEU { rs1_val >= rs2_val }
+        else if op == branch_op_t::BR_JAL { 1'b1 }
+        else if op == branch_op_t::BR_JALR { 1'b1 }
+        else if op == branch_op_t::BR_CJALR { 1'b1 }
+        else if op == branch_op_t::BR_CBNZ { 1'b0 }
+        else { 1'b0 };
+    branch_result_t::{taken = taken; target = target}
+}

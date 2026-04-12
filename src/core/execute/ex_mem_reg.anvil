@@ -1,0 +1,14 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+
+// Standalone EX/MEM latch for timing/unit tests.
+proc EX_MEM_Register(stage_in : left pipe_reg_ch<ex_mem_pkt_t>) {
+    reg data_q : ex_mem_pkt_t;
+
+    loop {
+        // Same one-cycle latch behavior as the other stage-register helpers.
+        let next_pkt = recv stage_in.write_req >>
+        set data_q := next_pkt >>
+        send stage_in.read_resp(*data_q)
+    }
+}

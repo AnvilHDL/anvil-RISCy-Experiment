@@ -1,0 +1,53 @@
+import "../../types/pipeline.anvilh"
+import "../top/packet_utils.anvil"
+
+// Capability arithmetic stays pure and side-effect free.
+// Phase 5a only covers dataflow-style transforms; dereference checks and
+// domain transitions arrive later.
+
+func cap_min(a : xlen_t, b : xlen_t) {
+    if a < b { a } else { b }
+}
+
+func cap_max(a : xlen_t, b : xlen_t) {
+    if a < b { b } else { a }
+}
+
+func cap_perms_and(a : cap_perm_t, b : cap_perm_t) {
+    <(<(a)::logic[3]> & <(b)::logic[3]>)::cap_perm_t>
+}
+
+func cap_alu_exec(op : cap_op_t,
+                  cap_a : capability_t,
+                  cap_b : capability_t,
+                  scalar_arg : xlen_t) {
+    if cap_a.valid == 1'b0 {
+        call zero_cap()
+    } else if op == cap_op_t::CAP_OP_MOVC {
+        cap_a
+    } else if op == cap_op_t::CAP_OP_CINCOFFSET {
+        capability_t::{
+            valid = cap_a.valid;
+            ctype = cap_a.ctype;
+            cursor = cap_a.cursor + scalar_arg;
+            base = cap_a.base;
+            end_ = cap_a.end_;
+            perms = cap_a.perms;
+            async = cap_a.async;
+            reg_id = cap_a.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_TIGHTEN {
+        capability_t::{
+            valid = cap_a.valid;
+            ctype = cap_a.ctype;
+            cursor = cap_a.cursor;
+            base = call cap_max(cap_a.base, cap_b.base);
+            end_ = call cap_min(cap_a.end_, cap_b.end_);
+            perms = call cap_perms_and(cap_a.perms, cap_b.perms);
+            async = cap_a.async;
+            reg_id = cap_a.reg_id
+        }
+    } else {
+        cap_a
+    }
+}

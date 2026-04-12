@@ -1,0 +1,131 @@
+import "../../types/pipeline.anvilh"
+
+// Branch predictor helpers for the pipeline core.
+//
+// The actual BTB and PHT array registers live in `pipeline_core` so the
+// top-level can own mutable state directly. This file defines the predictor's
+// shared structs plus pure lookup/update logic that operates on the selected
+// BTB entry and PHT counter for a given PC.
+
+type bpred_idx_t = logic[6];
+type btb_tag_t = logic[56];
+
+enum pht_ctr_t logic[2] {
+    PHT_STRONG_NT = 2'b00,
+    PHT_WEAK_NT   = 2'b01,
+    PHT_WEAK_T    = 2'b10,
+    PHT_STRONG_T  = 2'b11
+}
+
+struct btb_entry_t {
+    valid  : logic,
+    tag    : btb_tag_t,
+    target : xlen_t
+}
+
+struct bpred_resp_t {
+    predicted_taken  : logic,
+    predicted_target : xlen_t,
+    btb_hit          : logic,
+    counter          : pht_ctr_t
+}
+
+struct bpred_update_t {
+    btb_we   : logic,
+    btb_next : btb_entry_t,
+    pht_we   : logic,
+    pht_next : pht_ctr_t
+}
+
+func bpred_index(pc : xlen_t) {
+    <(pc[2+:6])::bpred_idx_t>
+}
+
+func bpred_tag(pc : xlen_t) {
+    <(pc[8+:56])::btb_tag_t>
+}
+
+func bpred_fallthrough(pc : xlen_t) {
+    pc + <(64'd4)::xlen_t>
+}
+
+func bpred_reset_entry() {
+    btb_entry_t::{valid = 1'b0; tag = <(56'd0)::btb_tag_t>; target = <(64'd0)::xlen_t>}
+}
+
+func bpred_reset_ctr() {
+    // Cold-start at strongly not-taken so unknown PCs fall through until
+    // execute-stage feedback proves otherwise.
+    pht_ctr_t::PHT_STRONG_NT
+}
+
+func bpred_predict_taken(ctr : pht_ctr_t) {
+    ctr == pht_ctr_t::PHT_WEAK_T || ctr == pht_ctr_t::PHT_STRONG_T
+}
+
+func bpred_ctr_inc(ctr : pht_ctr_t) {
+    if ctr == pht_ctr_t::PHT_STRONG_NT { pht_ctr_t::PHT_WEAK_NT }
+    else if ctr == pht_ctr_t::PHT_WEAK_NT { pht_ctr_t::PHT_WEAK_T }
+    else if ctr == pht_ctr_t::PHT_WEAK_T { pht_ctr_t::PHT_STRONG_T }
+    else { pht_ctr_t::PHT_STRONG_T }
+}
+
+func bpred_ctr_dec(ctr : pht_ctr_t) {
+    if ctr == pht_ctr_t::PHT_STRONG_T { pht_ctr_t::PHT_WEAK_T }
+    else if ctr == pht_ctr_t::PHT_WEAK_T { pht_ctr_t::PHT_WEAK_NT }
+    else if ctr == pht_ctr_t::PHT_WEAK_NT { pht_ctr_t::PHT_STRONG_NT }
+    else { pht_ctr_t::PHT_STRONG_NT }
+}
+
+func bpred_ctr_update(ctr : pht_ctr_t, taken : logic) {
+    if taken == 1'b1 { call bpred_ctr_inc(ctr) }
+    else { call bpred_ctr_dec(ctr) }
+}
+
+func bpred_is_control(op : branch_op_t) {
+    op != branch_op_t::BR_NONE
+}
+
+func bpred_is_unconditional(op : branch_op_t) {
+    op == branch_op_t::BR_JAL ||
+    op == branch_op_t::BR_JALR ||
+    op == branch_op_t::BR_CJALR
+}
+
+func bpred_lookup(pc : xlen_t, entry : btb_entry_t, ctr : pht_ctr_t) {
+    let hit = entry.valid == 1'b1 && entry.tag == call bpred_tag(pc) >>
+    let taken = hit == 1'b1 && call bpred_predict_taken(ctr) == 1'b1 >>
+    bpred_resp_t::{
+        predicted_taken = taken;
+        predicted_target =
+            if taken == 1'b1 { entry.target }
+            else { call bpred_fallthrough(pc) };
+        btb_hit = hit;
+        counter = ctr
+    }
+}
+
+func bpred_update(op : branch_op_t,
+                  pc : xlen_t,
+                  actual_taken : logic,
+                  actual_target : xlen_t,
+                  entry : btb_entry_t,
+                  ctr : pht_ctr_t) {
+    let should_train = call bpred_is_control(op) >>
+    let next_entry =
+        if should_train == 1'b1 {
+            btb_entry_t::{valid = 1'b1; tag = call bpred_tag(pc); target = actual_target}
+        } else {
+            entry
+        } >>
+    let next_ctr =
+        if should_train == 1'b0 { ctr }
+        else if call bpred_is_unconditional(op) == 1'b1 { pht_ctr_t::PHT_STRONG_T }
+        else { call bpred_ctr_update(ctr, actual_taken) } >>
+    bpred_update_t::{
+        btb_we = should_train;
+        btb_next = next_entry;
+        pht_we = should_train;
+        pht_next = next_ctr
+    }
+}

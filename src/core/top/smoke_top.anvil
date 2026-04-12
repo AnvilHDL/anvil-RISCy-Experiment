@@ -1,0 +1,48 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+import "../fetch/pc.anvil"
+import "../exception/exception_unit.anvil"
+import "../csr/csr_file.anvil"
+
+// Small structural smoke used to exercise three standalone processes together:
+// - ProgramCounter
+// - ExceptionUnit
+// - CSRFile
+//
+// This is intentionally much smaller than pipeline_core and exists mainly to
+// sanity-check the channel/service-style modules in isolation.
+
+proc smoke_top() {
+    chan pc_out_le -- pc_out_ri : pulse_ch<xlen_t>;
+    chan redirect_le -- redirect_ri : redirect_ch;
+    chan stall_le -- stall_ri : stall_ch;
+    chan exc_le -- exc_ri : exc_fire_ch;
+    chan csr_rd_le -- csr_rd_ri : csr_read_ch;
+    chan csr_wr_le -- csr_wr_ri : csr_write_ch;
+
+    spawn ProgramCounter(pc_out_ri, redirect_le, stall_le);
+    spawn ExceptionUnit(exc_le, redirect_ri, csr_wr_ri);
+    spawn CSRFile(csr_rd_le, csr_wr_le);
+
+    reg cycles_seen : logic[8];
+
+    loop {
+        // Keep the PC unstalled, observe the current value, and inject an
+        // exception pulse at a fixed cycle so we can watch the redirect happen.
+        send stall_ri.stall(1'b0) >>
+        let pc_val = recv pc_out_le.pulse >>
+        dprint "smoke_top pc=%d cycle=%d" (pc_val, *cycles_seen) >>
+        if *cycles_seen == 8'd3 {
+            send exc_ri.exc(exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(64'hdeadbeef)::xlen_t>})
+        } else {
+            ()
+        } >>
+        if *cycles_seen == 8'd6 {
+            dfinish
+        } else {
+            ()
+        } >>
+        set cycles_seen := *cycles_seen + 8'd1 >>
+        cycle 1
+    }
+}

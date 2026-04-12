@@ -1,0 +1,32 @@
+import "../../types/pipeline.anvilh"
+
+// Pure bit slicing helpers. Decode stays readable because all field extraction
+// goes through these names instead of hard-coding bit ranges everywhere.
+
+func opcode_of(instr : instr_t) {
+    instr[0+:7]
+}
+
+func rd_of(instr : instr_t) {
+    <(instr[7+:5])::reg_idx_t>
+}
+
+func funct3_of(instr : instr_t) {
+    instr[12+:3]
+}
+
+func rs1_of(instr : instr_t) {
+    <(instr[15+:5])::reg_idx_t>
+}
+
+func rs2_of(instr : instr_t) {
+    <(instr[20+:5])::reg_idx_t>
+}
+
+func funct7_of(instr : instr_t) {
+    instr[25+:7]
+}
+
+func csr_addr_of(instr : instr_t) {
+    <(instr[20+:12])::csr_idx_t>
+}

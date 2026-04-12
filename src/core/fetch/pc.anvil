@@ -1,0 +1,34 @@
+import "../../types/pipeline.anvilh"
+import "../../types/channels.anvilh"
+
+// Standalone PC process used by smoke_top.
+// The integrated pipeline_core keeps PC inside its local core_state_t instead.
+
+proc ProgramCounter(pc_out : right pulse_ch<xlen_t>,
+                    redirect_in : left redirect_ch,
+                    stall_in : left stall_ch) {
+    reg pc : xlen_t;
+    reg redirect_pending : logic;
+    reg redirect_target : xlen_t;
+
+    loop {
+        // Redirects are optional pulses. If one arrives, remember it and apply
+        // it after the current PC value has been observed.
+        try next_pc = recv redirect_in.target {
+            set redirect_target := next_pc;
+            set redirect_pending := 1'b1
+        } else {
+            ()
+        } >>
+        let stall_now = recv stall_in.stall >>
+        send pc_out.pulse(*pc) >>
+        if stall_now == 1'b1 {
+            cycle 1
+        } else if *redirect_pending == 1'b1 {
+            set pc := *redirect_target;
+            set redirect_pending := 1'b0
+        } else {
+            set pc := *pc + <(64'd4)::xlen_t>
+        }
+    }
+}
