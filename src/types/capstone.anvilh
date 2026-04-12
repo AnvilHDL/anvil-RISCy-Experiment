@@ -1,0 +1,99 @@
+type xlen_t = logic[64];
+type reg_idx_t = logic[5];
+type csr_idx_t = logic[12];
+
+enum cap_type_t logic[3] {
+    CAP_LINEAR      = 3'd0,
+    CAP_NONLINEAR   = 3'd1,
+    CAP_REVOCATION  = 3'd2,
+    CAP_UNINIT      = 3'd3,
+    CAP_SEALED      = 3'd4,
+    CAP_SEALED_RET  = 3'd5,
+    CAP_EXIT        = 3'd6
+}
+
+enum cap_perm_t logic[3] {
+    CAP_PERM_NONE = 3'd0,
+    CAP_PERM_X    = 3'd1,
+    CAP_PERM_W    = 3'd2,
+    CAP_PERM_WX   = 3'd3,
+    CAP_PERM_R    = 3'd4,
+    CAP_PERM_RX   = 3'd5,
+    CAP_PERM_RW   = 3'd6,
+    CAP_PERM_RWX  = 3'd7
+}
+
+enum cap_async_t logic[2] {
+    CAP_ASYNC_SYNC      = 2'd0,
+    CAP_ASYNC_EXCEPTION = 2'd1,
+    CAP_ASYNC_INTERRUPT = 2'd2
+}
+
+enum world_t logic[1] {
+    WORLD_NORMAL = 1'd0,
+    WORLD_SECURE = 1'd1
+}
+
+enum cap_op_t logic[5] {
+    CAP_OP_NONE        = 5'd0,
+    CAP_OP_MOVC        = 5'd1,
+    CAP_OP_CINCOFFSET  = 5'd2,
+    CAP_OP_SCC         = 5'd3,
+    CAP_OP_LCC         = 5'd4,
+    CAP_OP_SHRINK      = 5'd5,
+    CAP_OP_TIGHTEN     = 5'd6,
+    CAP_OP_SPLIT       = 5'd7,
+    CAP_OP_DELIN       = 5'd8,
+    CAP_OP_MREV        = 5'd9,
+    CAP_OP_DROP        = 5'd10,
+    CAP_OP_SEAL        = 5'd11,
+    CAP_OP_REVOKE      = 5'd12,
+    CAP_OP_INIT        = 5'd13,
+    CAP_OP_LDC         = 5'd14,
+    CAP_OP_STC         = 5'd15,
+    CAP_OP_CALL        = 5'd16,
+    CAP_OP_RETURN      = 5'd17,
+    CAP_OP_RETSEAL     = 5'd18,
+    CAP_OP_CJALR       = 5'd19,
+    CAP_OP_CBNZ        = 5'd20,
+    CAP_OP_CAPENTER    = 5'd21,
+    CAP_OP_CAPEXIT     = 5'd22
+}
+
+struct capability_t {
+    valid  : logic,
+    ctype  : cap_type_t,
+    cursor : xlen_t,
+    base   : xlen_t,
+    end_   : xlen_t,
+    perms  : cap_perm_t,
+    async  : cap_async_t,
+    reg_id : reg_idx_t
+}
+
+struct reg_val_t {
+    is_cap : logic,
+    ival   : xlen_t,
+    cval   : capability_t
+}
+
+struct cap_access_req_t {
+    cap        : capability_t,
+    addr       : xlen_t,
+    access_r   : logic,
+    access_w   : logic,
+    access_x   : logic,
+    access_sz  : logic[3]
+}
+
+struct cap_access_resp_t {
+    allow : logic,
+    fault : logic
+}
+
+struct ccsr_state_t {
+    ceh        : capability_t,
+    cinit      : capability_t,
+    epc        : capability_t,
+    switch_cap : capability_t
+}
