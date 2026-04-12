@@ -1,0 +1,9 @@
+chan bad_pipe<T : type> {
+    left write_req : (T@#1) @#1 - @#2
+}
+
+proc bad_channel_sync() {
+    loop {
+        cycle 1
+    }
+}

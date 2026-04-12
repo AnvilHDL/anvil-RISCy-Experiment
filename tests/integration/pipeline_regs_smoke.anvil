@@ -1,0 +1,54 @@
+import "../../src/types/pipeline.anvilh"
+import "../../src/types/channels.anvilh"
+import "../../src/core/top/packet_utils.anvil"
+import "../../src/core/fetch/if_id_reg.anvil"
+import "../../src/core/decode/id_ex_reg.anvil"
+import "../../src/core/execute/ex_mem_reg.anvil"
+import "../../src/core/memory/mem_wb_reg.anvil"
+
+proc pipeline_regs_smoke() {
+    chan ifid_le -- ifid_ri : pipe_reg_ch<if_id_pkt_t>;
+    chan idex_le -- idex_ri : pipe_reg_ch<id_ex_pkt_t>;
+    chan exmem_le -- exmem_ri : pipe_reg_ch<ex_mem_pkt_t>;
+    chan memwb_le -- memwb_ri : pipe_reg_ch<mem_wb_pkt_t>;
+    reg phase_q : logic[3];
+
+    spawn IF_ID_Register(ifid_le);
+    spawn ID_EX_Register(idex_le);
+    spawn EX_MEM_Register(exmem_le);
+    spawn MEM_WB_Register(memwb_le);
+
+    loop {
+        if *phase_q == 3'd0 {
+            send ifid_ri.write_req(if_id_pkt_t::{valid = 1'b1; fetched = fetch_pkt_t::{pc = <(64'd4)::xlen_t>; instr = <(32'h00500093)::instr_t>}; predicted_taken = 1'b0; predicted_target = <(64'd8)::xlen_t>; cap_target_reg = <(5'd0)::reg_idx_t>; cap_result = call zero_cap(); exc = call no_exc()}) >>
+            cycle 1 >>
+            let ifid_out = recv ifid_ri.read_resp >>
+            dprint "ifid pc=%d instr=%d" (ifid_out.fetched.pc, <(ifid_out.fetched.instr)::xlen_t>) >>
+            set phase_q := 3'd1 >>
+            cycle 1
+        } else if *phase_q == 3'd1 {
+            send idex_ri.write_req(id_ex_pkt_t::{valid = 1'b1; pc = <(64'd8)::xlen_t>; instr = <(32'h00700113)::instr_t>; rs1 = <(5'd1)::reg_idx_t>; rs2 = <(5'd0)::reg_idx_t>; rd = <(5'd2)::reg_idx_t>; rs1_val = <(64'd5)::xlen_t>; rs2_val = <(64'd0)::xlen_t>; cap_rs1_val = call zero_cap(); cap_rs2_val = call zero_cap(); imm = <(64'd7)::xlen_t>; predicted_taken = 1'b0; predicted_target = <(64'd12)::xlen_t>; cap_target_reg = <(5'd2)::reg_idx_t>; cap_result = call zero_cap(); ctrl = call nop_ctrl(); exc = call no_exc()}) >>
+            cycle 1 >>
+            let idex_out = recv idex_ri.read_resp >>
+            dprint "idex pc=%d rd=%d imm=%d" (idex_out.pc, idex_out.rd, idex_out.imm) >>
+            set phase_q := 3'd2 >>
+            cycle 1
+        } else if *phase_q == 3'd2 {
+            send exmem_ri.write_req(ex_mem_pkt_t::{valid = 1'b1; pc = <(64'd12)::xlen_t>; instr = <(32'h009101b3)::instr_t>; rd = <(5'd3)::reg_idx_t>; alu_result = <(64'd12)::xlen_t>; store_data = <(64'd9)::xlen_t>; branch_taken = 1'b0; branch_tgt = <(64'd0)::xlen_t>; cap_target_reg = <(5'd3)::reg_idx_t>; cap_result = call zero_cap(); csr_addr = <(12'd0)::csr_idx_t>; csr_new_val = <(64'd0)::xlen_t>; csr_we = 1'b0; ctrl = call nop_ctrl(); exc = call no_exc()}) >>
+            cycle 1 >>
+            let exmem_out = recv exmem_ri.read_resp >>
+            dprint "exmem pc=%d rd=%d alu=%d" (exmem_out.pc, exmem_out.rd, exmem_out.alu_result) >>
+            set phase_q := 3'd3 >>
+            cycle 1
+        } else if *phase_q == 3'd3 {
+            send memwb_ri.write_req(mem_wb_pkt_t::{valid = 1'b1; pc = <(64'd16)::xlen_t>; instr = <(32'h00d20233)::instr_t>; rd = <(5'd4)::reg_idx_t>; alu_result = <(64'd21)::xlen_t>; mem_data = <(64'd13)::xlen_t>; cap_target_reg = <(5'd4)::reg_idx_t>; cap_result = call zero_cap(); csr_addr = <(12'd0)::csr_idx_t>; csr_new_val = <(64'd0)::xlen_t>; csr_we = 1'b0; ctrl = call nop_ctrl(); exc = call no_exc()}) >>
+            cycle 1 >>
+            let memwb_out = recv memwb_ri.read_resp >>
+            dprint "memwb pc=%d rd=%d mem=%d" (memwb_out.pc, memwb_out.rd, memwb_out.mem_data) >>
+            dfinish >>
+            cycle 1
+        } else {
+            cycle 1
+        }
+    }
+}

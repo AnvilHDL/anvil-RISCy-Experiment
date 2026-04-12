@@ -1,0 +1,36 @@
+import "/home/omar/NUS/RISCy-Experiment/src/types/pipeline.anvilh"
+import "/home/omar/NUS/RISCy-Experiment/src/types/channels.anvilh"
+import "/home/omar/NUS/RISCy-Experiment/src/types/riscv.anvilh"
+import "/home/omar/NUS/RISCy-Experiment/src/core/csr/csr_file.anvil"
+
+proc csr_file_smoke() {
+    chan csr_rd_le -- csr_rd_ri : csr_read_ch;
+    chan csr_wr_le -- csr_wr_ri : csr_write_ch;
+
+    spawn CSRFile(csr_rd_le, csr_wr_le);
+
+    loop {
+        cycle 2 >>
+        send csr_wr_ri.write_req(csr_write_req_t::{we = 1'b1; addr = call csr_mtvec_idx(); val = <(64'd100)::xlen_t>}) >>
+        cycle 3 >>
+        send csr_rd_ri.read_req(csr_read_req_t::{addr = call csr_mtvec_idx()}) >>
+        cycle 2 >>
+        let mtvec_r = recv csr_rd_ri.read_resp >>
+        send csr_wr_ri.write_req(csr_write_req_t::{we = 1'b1; addr = call csr_mepc_idx(); val = <(64'd44)::xlen_t>}) >>
+        cycle 3 >>
+        send csr_rd_ri.read_req(csr_read_req_t::{addr = call csr_mepc_idx()}) >>
+        cycle 2 >>
+        let mepc_r = recv csr_rd_ri.read_resp >>
+        if mtvec_r.val != <(64'd100)::xlen_t> {
+            dprint "csr_file_smoke bad_mtvec" ()
+        } else if mepc_r.val != <(64'd44)::xlen_t> {
+            dprint "csr_file_smoke bad_mepc" ()
+        } else if mepc_r.exc != 1'b0 {
+            dprint "csr_file_smoke bad_exc" ()
+        } else {
+            dprint "csr_file_smoke pass" ()
+        } >>
+        dfinish >>
+        cycle 1
+    }
+}

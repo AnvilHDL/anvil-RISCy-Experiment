@@ -1,0 +1,4 @@
+ifid pc=                   4 instr=             5243027
+idex pc=                   8 rd= 2 imm=                   7
+exmem pc=                  12 rd= 3 alu=                  12
+memwb pc=                  16 rd= 4 mem=                  13

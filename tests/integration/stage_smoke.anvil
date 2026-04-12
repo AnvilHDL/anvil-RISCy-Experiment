@@ -1,0 +1,32 @@
+import "../../src/core/top/packet_utils.anvil"
+import "../../src/core/execute/alu.anvil"
+import "../../src/core/execute/ex_stage.anvil"
+import "../../src/core/execute/branch.anvil"
+import "../../src/core/memory/mem_stage.anvil"
+import "../../src/core/writeback/wb.anvil"
+
+proc stage_smoke() {
+    loop {
+        let add_ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE} >>
+        let add_pkt = id_ex_pkt_t::{valid = 1'b1; pc = <(64'd8)::xlen_t>; instr = <(32'd0)::instr_t>; rs1 = <(5'd1)::reg_idx_t>; rs2 = <(5'd2)::reg_idx_t>; rd = <(5'd3)::reg_idx_t>; rs1_val = <(64'd5)::xlen_t>; rs2_val = <(64'd7)::xlen_t>; cap_rs1_val = call zero_cap(); cap_rs2_val = call zero_cap(); imm = <(64'd0)::xlen_t>; predicted_taken = 1'b0; predicted_target = <(64'd12)::xlen_t>; cap_target_reg = <(5'd3)::reg_idx_t>; cap_result = call zero_cap(); ctrl = add_ctrl; exc = call no_exc()} >>
+        let add_ex = call execute_stage(add_pkt,
+                                        <(64'd5)::xlen_t>,
+                                        <(64'd7)::xlen_t>,
+                                        <(64'd5)::xlen_t>,
+                                        <(64'd7)::xlen_t>,
+                                        <(64'd7)::xlen_t>) >>
+        let br_res = call branch_eval(branch_op_t::BR_EQ, <(64'd16)::xlen_t>, <(64'd9)::xlen_t>, <(64'd9)::xlen_t>, <(64'd8)::xlen_t>) >>
+        let load_ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b1; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_MEM; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'b011; cap_op = cap_op_t::CAP_OP_NONE} >>
+        let load_ex = ex_mem_pkt_t::{valid = 1'b1; pc = <(64'd32)::xlen_t>; instr = <(32'h00012383)::instr_t>; rd = <(5'd7)::reg_idx_t>; alu_result = <(64'd0)::xlen_t>; store_data = <(64'd0)::xlen_t>; branch_taken = 1'b0; branch_tgt = <(64'd0)::xlen_t>; cap_target_reg = <(5'd7)::reg_idx_t>; cap_result = call zero_cap(); csr_addr = <(12'd0)::csr_idx_t>; csr_new_val = <(64'd0)::xlen_t>; csr_we = 1'b0; ctrl = load_ctrl; exc = call no_exc()} >>
+        let load_wb = call memory_stage(load_ex, <(64'd42)::xlen_t>) >>
+        let load_val = call wb_value(load_wb) >>
+        let srl_res = call alu_exec(alu_op_t::ALU_SRL, <(64'd25)::xlen_t>, <(64'd2)::xlen_t>) >>
+        let sra_res = call alu_exec(alu_op_t::ALU_SRA, <(64'hfffffffffffffff0)::xlen_t>, <(64'd2)::xlen_t>) >>
+        dprint "stage add alu=%d rd=%d branch=%d" (add_ex.alu_result, add_ex.rd, add_ex.branch_taken) >>
+        dprint "stage branch taken=%d target=%d" (br_res.taken, br_res.target) >>
+        dprint "stage load wb=%d rd=%d mem=%d" (load_val, load_wb.rd, load_wb.ctrl.mem_read) >>
+        dprint "stage shift srl=%d sra=%d" (srl_res.result, sra_res.result) >>
+        dfinish >>
+        cycle 1
+    }
+}

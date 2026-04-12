@@ -1,0 +1,23 @@
+import "../../src/types/pipeline.anvilh"
+import "../../src/types/channels.anvilh"
+import "../../src/core/decode/regfile.anvil"
+
+proc regfile_smoke() {
+    chan read_le -- read_ri : rf_read_ch;
+    chan write_le -- write_ri : rf_write_ch;
+
+    spawn RegisterFile(read_le, write_le);
+
+    loop {
+        send write_ri.write_req(rf_write_pkt_t::{we = 1'b1; rd = <(5'd1)::reg_idx_t>; val = <(64'd5)::xlen_t>}) >>
+        cycle 1 >>
+        send write_ri.write_req(rf_write_pkt_t::{we = 1'b1; rd = <(5'd0)::reg_idx_t>; val = <(64'd99)::xlen_t>}) >>
+        cycle 2 >>
+        send read_ri.read_req(rf_read_req_t::{rs1 = <(5'd1)::reg_idx_t>; rs2 = <(5'd0)::reg_idx_t>}) >>
+        cycle 2 >>
+        let resp = recv read_ri.read_resp >>
+        dprint "regfile r1=%d r0=%d" (resp.rs1_val, resp.rs2_val) >>
+        dfinish >>
+        cycle 1
+    }
+}

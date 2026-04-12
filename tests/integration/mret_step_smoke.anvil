@@ -1,0 +1,55 @@
+import "../../src/core/top/pipeline_core.anvil"
+import "../../src/core/decode/ctrl.anvil"
+
+proc mret_step_smoke() {
+    loop {
+        // Keep MRET in the main integration suite so the architectural return
+        // path is exercised alongside the ordinary datapath tests.
+        let boot = call core_boot_state() >>
+        let mret_dec = call decode_ctrl(<(32'h30200073)::instr_t>) >>
+        let start =
+            core_state_t::{
+                pc = <(64'd20)::xlen_t>;
+                regs = boot.regs;
+                dmem = boot.dmem;
+                csr = rv64i_csr_state_t::{
+                    mstatus = boot.csr.mstatus;
+                    misa = boot.csr.misa;
+                    mtvec = boot.csr.mtvec;
+                    mscratch = boot.csr.mscratch;
+                    mepc = <(64'd52)::xlen_t>;
+                    mcause = boot.csr.mcause;
+                    mtval = boot.csr.mtval;
+                    mcycle = boot.csr.mcycle;
+                    minstret = boot.csr.minstret;
+                    mhartid = boot.csr.mhartid
+                };
+                if_id = boot.if_id;
+                id_ex = id_ex_pkt_t::{
+                    valid = 1'b1;
+                    pc = <(64'd20)::xlen_t>;
+                    instr = <(32'h30200073)::instr_t>;
+                    rs1 = <(5'd0)::reg_idx_t>;
+                    rs2 = <(5'd0)::reg_idx_t>;
+                    rd = <(5'd0)::reg_idx_t>;
+                    rs1_val = <(64'd0)::xlen_t>;
+                    rs2_val = <(64'd0)::xlen_t>;
+                    cap_rs1_val = call zero_cap();
+                    cap_rs2_val = call zero_cap();
+                    imm = <(64'd0)::xlen_t>;
+                    predicted_taken = 1'b0;
+                    predicted_target = <(64'd24)::xlen_t>;
+                    cap_target_reg = <(5'd0)::reg_idx_t>;
+                    cap_result = call zero_cap();
+                    ctrl = mret_dec.ctrl;
+                    exc = call no_exc()
+                };
+                ex_mem = boot.ex_mem;
+                mem_wb = boot.mem_wb
+            } >>
+        let next = call core_step(start) >>
+        dprint "mret next_pc=%d if_valid=%d id_valid=%d" (next.pc, next.if_id.valid, next.id_ex.valid) >>
+        dfinish >>
+        cycle 1
+    }
+}

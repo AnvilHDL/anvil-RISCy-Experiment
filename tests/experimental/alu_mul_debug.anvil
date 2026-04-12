@@ -1,0 +1,20 @@
+import "../../src/core/execute/alu.anvil"
+
+proc alu_mul_debug() {
+    loop {
+        let a0 = <(64'd100)::xlen_t> >>
+        let a1 = a0 - <(64'd1)::xlen_t> >>
+        let a2 = a0 - <(64'd2)::xlen_t> >>
+        let a2s = call alu_exec(alu_op_t::ALU_SLL, a2, <(64'd32)::xlen_t>) >>
+        let a3s = call alu_exec(alu_op_t::ALU_SLL, a1, <(64'd32)::xlen_t>) >>
+        let mulhu_res = call alu_exec(alu_op_t::ALU_MULHU, a3s.result, a2s.result) >>
+        let shr_res = call alu_exec(alu_op_t::ALU_SRL, mulhu_res.result, <(64'd1)::xlen_t>) >>
+        let mul_res = call alu_exec(alu_op_t::ALU_MUL, a1, a1) >>
+        let add_res = call alu_exec(alu_op_t::ALU_ADD, a0, mul_res.result) >>
+        let subw_res = call alu_exec(alu_op_t::ALU_SUBW, add_res.result, shr_res.result) >>
+        dprint "mul=%d mulhu=%d shr=%d subw=%d"
+               (mul_res.result, mulhu_res.result, shr_res.result, subw_res.result) >>
+        dfinish >>
+        cycle 1
+    }
+}

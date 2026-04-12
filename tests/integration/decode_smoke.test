@@ -1,0 +1,6 @@
+ctrl mret sys=1 rw=0 illegal=0
+ctrl beq br= 1 srcpc=1 illegal=0
+ctrl srai rw=1 imm=1 alu= 7 illegal=0
+ctrl srli rw=1 imm=1 alu= 6 illegal=0
+ctrl addi rw=1 imm=1 alu= 0 illegal=0
+imm addi=                   5 store=                   8 branch=                  16 jal=                   8 lui=           305418240 srli=                   2 srai=                   1

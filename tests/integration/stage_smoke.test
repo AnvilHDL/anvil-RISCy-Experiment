@@ -1,0 +1,4 @@
+stage shift srl=                   6 sra=18446744073709551612
+stage load wb=                  42 rd= 7 mem=1
+stage branch taken=1 target=                  24
+stage add alu=                  12 rd= 3 branch=0

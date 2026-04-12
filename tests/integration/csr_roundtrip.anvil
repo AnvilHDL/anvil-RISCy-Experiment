@@ -1,0 +1,26 @@
+import "../../src/core/csr/csr_state.anvil"
+
+proc csr_roundtrip() {
+    loop {
+        let boot = call csr_boot_state(<(64'd64)::xlen_t>) >>
+        let wr_mtvec = call csr_write_field(boot, call csr_mtvec_idx(), <(64'd100)::xlen_t>) >>
+        let wr_mepc = call csr_write_field(wr_mtvec, call csr_mepc_idx(), <(64'd44)::xlen_t>) >>
+        let mtvec_r = call csr_read_field(wr_mepc, call csr_mtvec_idx()) >>
+        let mepc_r = call csr_read_field(wr_mepc, call csr_mepc_idx()) >>
+        let misa_r = call csr_read_field(wr_mepc, call csr_misa_idx()) >>
+        if mtvec_r != <(64'd100)::xlen_t> {
+            dprint "csr_roundtrip bad_mtvec" () >>
+            dfinish
+        } else if mepc_r != <(64'd44)::xlen_t> {
+            dprint "csr_roundtrip bad_mepc" () >>
+            dfinish
+        } else if misa_r != boot.misa {
+            dprint "csr_roundtrip bad_misa" () >>
+            dfinish
+        } else {
+            dprint "csr_roundtrip pass" () >>
+            dfinish
+        } >>
+        cycle 1
+    }
+}

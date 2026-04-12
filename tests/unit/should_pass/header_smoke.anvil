@@ -1,0 +1,29 @@
+import "../../../src/types/pipeline.anvilh"
+import "../../../src/types/channels.anvilh"
+
+proc header_smoke() {
+    reg pkt : if_id_pkt_t;
+    reg cap : capability_t;
+
+    loop {
+        set pkt := if_id_pkt_t::{
+            valid = 1'b1;
+            fetched = fetch_pkt_t::{pc = <(64'd4)::xlen_t>; instr = <(32'h00000013)::instr_t>};
+            predicted_taken = 1'b0;
+            predicted_target = <(64'd8)::xlen_t>;
+            cap_target_reg = <(5'd0)::reg_idx_t>;
+            cap_result = capability_t::{valid = 1'b0; ctype = cap_type_t::CAP_LINEAR; cursor = <(64'd0)::xlen_t>; base = <(64'd0)::xlen_t>; end_ = <(64'd0)::xlen_t>; perms = cap_perm_t::CAP_PERM_NONE; async = cap_async_t::CAP_ASYNC_SYNC; reg_id = <(5'd0)::reg_idx_t>};
+            exc = exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>}
+        };
+        set cap := capability_t::{
+            valid = 1'b1;
+            ctype = cap_type_t::CAP_LINEAR;
+            cursor = <(64'd0)::xlen_t>;
+            base = <(64'd0)::xlen_t>;
+            end_ = <(64'd64)::xlen_t>;
+            perms = cap_perm_t::CAP_PERM_RWX;
+            async = cap_async_t::CAP_ASYNC_SYNC;
+            reg_id = <(5'd1)::reg_idx_t>
+        }
+    }
+}

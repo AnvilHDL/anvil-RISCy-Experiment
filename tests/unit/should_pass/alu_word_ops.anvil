@@ -1,0 +1,15 @@
+import "../../../src/core/execute/alu.anvil"
+
+proc alu_word_ops() {
+    loop {
+        let addw_res = call alu_exec(alu_op_t::ALU_ADDW, <(64'h00000000ffffffff)::xlen_t>, <(64'd2)::xlen_t>) >>
+        let sllw_res = call alu_exec(alu_op_t::ALU_SLLW, <(64'd3)::xlen_t>, <(64'd4)::xlen_t>) >>
+        let srlw_res = call alu_exec(alu_op_t::ALU_SRLW, <(64'h00000000f0000000)::xlen_t>, <(64'd4)::xlen_t>) >>
+        let sraw_res = call alu_exec(alu_op_t::ALU_SRAW, <(64'h00000000fffffff0)::xlen_t>, <(64'd2)::xlen_t>) >>
+        let _ = addw_res >>
+        let _ = sllw_res >>
+        let _ = srlw_res >>
+        let _ = sraw_res >>
+        cycle 1
+    }
+}

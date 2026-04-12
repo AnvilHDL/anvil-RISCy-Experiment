@@ -1,0 +1,21 @@
+import "../../src/types/pipeline.anvilh"
+import "../../src/types/channels.anvilh"
+import "../../src/core/memory/dmem.anvil"
+
+proc dmem_smoke() {
+    chan read_le -- read_ri : dmem_read_ch;
+    chan write_le -- write_ri : dmem_write_ch;
+
+    spawn DataMemory(read_le, write_le);
+
+    loop {
+        send write_ri.write_req(dmem_write_req_t::{addr = <(64'd0)::xlen_t>; wdata = <(64'd18)::xlen_t>}) >>
+        cycle 2 >>
+        send read_ri.read_req(dmem_read_req_t::{addr = <(64'd0)::xlen_t>}) >>
+        cycle 1 >>
+        let rresp = recv read_ri.read_resp >>
+        dprint "dmem load=%d" (rresp.rdata) >>
+        dfinish >>
+        cycle 1
+    }
+}

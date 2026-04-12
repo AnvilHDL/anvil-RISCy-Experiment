@@ -1,0 +1,25 @@
+import "../../../src/core/csr/csr_state.anvil"
+
+proc csr_state_smoke() {
+    loop {
+        let boot = call csr_boot_state(<(64'd64)::xlen_t>) >>
+        let cyc = call csr_advance_cycle(boot) >>
+        let ret = call csr_note_retire(cyc) >>
+        let exc = call csr_take_exception(ret,
+                                          <(64'd40)::xlen_t>,
+                                          exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(64'hdead)::xlen_t>}) >>
+        let mret = call is_mret_instr(<(32'h30200073)::instr_t>) >>
+        if exc.mtvec == <(64'd64)::xlen_t> &&
+           exc.mcycle == <(64'd1)::xlen_t> &&
+           exc.minstret == <(64'd1)::xlen_t> &&
+           exc.mcause == <(64'd2)::xlen_t> &&
+           exc.mepc == <(64'd40)::xlen_t> &&
+           exc.mtval == <(64'hdead)::xlen_t> &&
+           mret == 1'b1 {
+            dfinish
+        } else {
+            dfinish
+        } >>
+        cycle 1
+    }
+}

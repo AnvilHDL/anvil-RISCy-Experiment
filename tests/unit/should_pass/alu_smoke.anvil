@@ -1,0 +1,16 @@
+import "../../../src/core/execute/alu.anvil"
+
+proc alu_smoke() {
+    loop {
+        let add_res = call alu_exec(alu_op_t::ALU_ADD, <(64'd10)::xlen_t>, <(64'd32)::xlen_t>) >>
+        let sub_res = call alu_exec(alu_op_t::ALU_SUB, <(64'd40)::xlen_t>, <(64'd8)::xlen_t>) >>
+        let srl_res = call alu_exec(alu_op_t::ALU_SRL, <(64'd25)::xlen_t>, <(64'd2)::xlen_t>) >>
+        let sra_res = call alu_exec(alu_op_t::ALU_SRA, <(64'hfffffffffffffff0)::xlen_t>, <(64'd2)::xlen_t>) >>
+        cycle 1 >>
+        let _ = add_res >>
+        let _ = sub_res >>
+        let _ = srl_res >>
+        let _ = sra_res >>
+        cycle 1
+    }
+}

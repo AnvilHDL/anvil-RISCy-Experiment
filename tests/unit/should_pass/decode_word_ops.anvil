@@ -1,0 +1,19 @@
+import "../../../src/core/decode/ctrl.anvil"
+
+proc decode_word_ops() {
+    loop {
+        let addiw_ctrl = call decode_ctrl(<(32'h0010809b)::instr_t>) >>
+        let slliw_ctrl = call decode_ctrl(<(32'h0030911b)::instr_t>) >>
+        let sraiw_ctrl = call decode_ctrl(<(32'h4020d11b)::instr_t>) >>
+        let addw_ctrl = call decode_ctrl(<(32'h002081bb)::instr_t>) >>
+        let subw_ctrl = call decode_ctrl(<(32'h402081bb)::instr_t>) >>
+        let sraw_ctrl = call decode_ctrl(<(32'h4020d1bb)::instr_t>) >>
+        let _ = addiw_ctrl >>
+        let _ = slliw_ctrl >>
+        let _ = sraiw_ctrl >>
+        let _ = addw_ctrl >>
+        let _ = subw_ctrl >>
+        let _ = sraw_ctrl >>
+        cycle 1
+    }
+}

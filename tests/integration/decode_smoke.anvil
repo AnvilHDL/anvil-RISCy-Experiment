@@ -1,0 +1,27 @@
+import "../../src/core/decode/immgen.anvil"
+import "../../src/core/decode/ctrl.anvil"
+
+proc decode_smoke() {
+    loop {
+        let addi_imm = call decode_imm(<(32'h00500093)::instr_t>) >>
+        let store_imm = call decode_imm(<(32'h0020a423)::instr_t>) >>
+        let branch_imm = call decode_imm(<(32'h00208863)::instr_t>) >>
+        let jal_imm = call decode_imm(<(32'h008000ef)::instr_t>) >>
+        let lui_imm = call decode_imm(<(32'h123450b7)::instr_t>) >>
+        let srli_imm = call decode_imm(<(32'h00245493)::instr_t>) >>
+        let srai_imm = call decode_imm(<(32'h4014d513)::instr_t>) >>
+        let addi_ctrl = call decode_ctrl(<(32'h00500093)::instr_t>) >>
+        let srli_ctrl = call decode_ctrl(<(32'h00245493)::instr_t>) >>
+        let srai_ctrl = call decode_ctrl(<(32'h4014d513)::instr_t>) >>
+        let beq_ctrl = call decode_ctrl(<(32'h00208863)::instr_t>) >>
+        let mret_ctrl = call decode_ctrl(<(32'h30200073)::instr_t>) >>
+        dprint "imm addi=%d store=%d branch=%d jal=%d lui=%d srli=%d srai=%d" (addi_imm, store_imm, branch_imm, jal_imm, lui_imm, srli_imm, srai_imm) >>
+        dprint "ctrl addi rw=%d imm=%d alu=%d illegal=%d" (addi_ctrl.ctrl.reg_write, addi_ctrl.ctrl.use_imm, addi_ctrl.ctrl.alu_op, addi_ctrl.illegal) >>
+        dprint "ctrl srli rw=%d imm=%d alu=%d illegal=%d" (srli_ctrl.ctrl.reg_write, srli_ctrl.ctrl.use_imm, srli_ctrl.ctrl.alu_op, srli_ctrl.illegal) >>
+        dprint "ctrl srai rw=%d imm=%d alu=%d illegal=%d" (srai_ctrl.ctrl.reg_write, srai_ctrl.ctrl.use_imm, srai_ctrl.ctrl.alu_op, srai_ctrl.illegal) >>
+        dprint "ctrl beq br=%d srcpc=%d illegal=%d" (beq_ctrl.ctrl.branch_op, beq_ctrl.ctrl.src_a_pc, beq_ctrl.illegal) >>
+        dprint "ctrl mret sys=%d rw=%d illegal=%d" (mret_ctrl.ctrl.is_system, mret_ctrl.ctrl.reg_write, mret_ctrl.illegal) >>
+        dfinish >>
+        cycle 1
+    }
+}
