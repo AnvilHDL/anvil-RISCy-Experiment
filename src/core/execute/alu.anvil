@@ -169,12 +169,32 @@ func arithmetic_shr(lhs : xlen_t, rhs : xlen_t) {
     if lhs[63] == 1'b1 { logical | call sra_fill_mask_64(rhs) } else { logical }
 }
 
+func manual_shl32(val : logic[32], shamt : logic[5]) {
+    let s1 = if shamt[0] == 1'b1 { #{val[0+:31], 1'b0} } else { val } >>
+    let s2 = if shamt[1] == 1'b1 { #{s1[0+:30], 2'b0} } else { s1 } >>
+    let s3 = if shamt[2] == 1'b1 { #{s2[0+:28], 4'b0} } else { s2 } >>
+    let s4 = if shamt[3] == 1'b1 { #{s3[0+:24], 8'b0} } else { s3 } >>
+    let s5 = if shamt[4] == 1'b1 { #{s4[0+:16], 16'b0} } else { s4 } >>
+    s5
+}
+
+func manual_shr32(val : logic[32], shamt : logic[5]) {
+    let s1 = if shamt[0] == 1'b1 { #{1'b0, val[1+:31]} } else { val } >>
+    let s2 = if shamt[1] == 1'b1 { #{2'b0, s1[2+:30]} } else { s1 } >>
+    let s3 = if shamt[2] == 1'b1 { #{4'b0, s2[4+:28]} } else { s2 } >>
+    let s4 = if shamt[3] == 1'b1 { #{8'b0, s3[8+:24]} } else { s3 } >>
+    let s5 = if shamt[4] == 1'b1 { #{16'b0, s4[16+:16]} } else { s4 } >>
+    s5
+}
+
 func logical_shl_32(lhs : xlen_t, rhs : xlen_t) {
-    call shl_dyn(lhs, <(#{59'd0, call shamt5(rhs)})::xlen_t>)
+    let res32 = call manual_shl32(lhs[0+:32], rhs[0+:5]);
+    <(#{32'd0, res32})::xlen_t>
 }
 
 func logical_shr_32(lhs : xlen_t, rhs : xlen_t) {
-    call shr_dyn(lhs, <(#{59'd0, call shamt5(rhs)})::xlen_t>)
+    let res32 = call manual_shr32(lhs[0+:32], rhs[0+:5]);
+    <(#{32'd0, res32})::xlen_t>
 }
 
 func sra_fill_mask_32(rhs : xlen_t) {
@@ -214,14 +234,12 @@ func alu_exec(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
         else if op == alu_op_t::ALU_ADDW { call sext32_result(<(lhs[0+:32] + rhs[0+:32])::logic[32]>) }
         else if op == alu_op_t::ALU_SUBW { call sext32_result(<(lhs[0+:32] - rhs[0+:32])::logic[32]>) }
         else if op == alu_op_t::ALU_SLLW {
-            let lhs32 = <(#{32'd0, lhs[0+:32]})::xlen_t>;
-            let shifted32 = call logical_shl_32(lhs32, rhs);
-            call sext32_result(shifted32[0+:32])
+            let res = call logical_shl_32(lhs, rhs);
+            call sext32_result(res[0+:32])
         }
         else if op == alu_op_t::ALU_SRLW {
-            let lhs32 = <(#{32'd0, lhs[0+:32]})::xlen_t>;
-            let shifted32 = call logical_shr_32(lhs32, rhs);
-            call sext32_result(shifted32[0+:32])
+            let res = call logical_shr_32(lhs, rhs);
+            call sext32_result(res[0+:32])
         }
         else if op == alu_op_t::ALU_SRAW {
             let sex32 = call sext32_result(lhs[0+:32]);
