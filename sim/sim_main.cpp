@@ -356,6 +356,7 @@ int main(int argc, char** argv) {
                       << " a1=" << read_gpr(top->rootp, 11)
                       << " a2=" << read_gpr(top->rootp, 12)
                       << " a3=" << read_gpr(top->rootp, 13)
+                      << " a4=" << read_gpr(top->rootp, 14)
                       << " t0=" << read_gpr(top->rootp, 5)
                       << " t1=" << read_gpr(top->rootp, 6)
                       << " t2=" << read_gpr(top->rootp, 7)
