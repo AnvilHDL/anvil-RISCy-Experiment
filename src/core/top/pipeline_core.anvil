@@ -359,7 +359,10 @@ proc pipeline_core() {
             let cur_mem_wb = *mem_wb_q >>
             let cur_csr = *csr_q >>
             let next_csr = call core_csr_next(cur_csr, cur_mem_wb) >>
-            set csr_q := next_csr
+            {
+                set csr_q := next_csr;
+                cycle 1
+            }
         }
     }
 
@@ -371,8 +374,9 @@ proc pipeline_core() {
             if call core_wb_fire(cur_mem_wb) == 1'b1 {
                 set regs_q[cur_mem_wb.rd] := call wb_value(cur_mem_wb)
             } else {
-                cycle 1
-            }
+                ()
+            };
+            cycle 1
         }
     }
 
@@ -399,8 +403,9 @@ proc pipeline_core() {
                     set cap_reg_reg_id_q[cap_wb_rd] := cur_mem_wb.cap_result.reg_id
                 }
             } else {
-                cycle 1
-            }
+                ()
+            };
+            cycle 1
         }
     }
 
@@ -434,8 +439,9 @@ proc pipeline_core() {
                                           cur_ex_mem.alu_result[0+:3]) >>
                 set dmem_q[aligned_dmem_idx] := store_masked
             } else {
-                cycle 1
-            }
+                ()
+            };
+            cycle 1
         }
     }
 
@@ -637,7 +643,10 @@ proc pipeline_core() {
                 let next_mem_wb =
                     if trap_now == 1'b1 { call bubble_mem_wb() }
                     else { call memory_stage(cur_ex_mem, mem_rdata_sized) } >>
-                set mem_wb_q := next_mem_wb
+                {
+                    set mem_wb_q := next_mem_wb;
+                    cycle 1
+                }
             }
         }
     }
