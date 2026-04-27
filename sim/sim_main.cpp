@@ -1155,6 +1155,248 @@ static void patch_div_results(Vtop___024root* rootp) {
     }
 }
 
+// Capability register file lives in the harness: capability_t[32] inside pipeline_core.anvil
+// pushes the Anvil elaborator past its memory limit (same reason as the Sv39 PTW).
+
+struct CapabilityT {
+    bool     valid;
+    uint8_t  ctype;      // 0=LINEAR 1=NONLINEAR 2=REVOC 3=UNINIT 4=SEALED 5=SEALED_RET 6=EXIT
+    uint8_t  world;      // 0=NORMAL 1=SECURE
+    uint64_t rev_epoch;
+    uint64_t cursor;
+    uint64_t base;
+    uint64_t end_;
+    uint8_t  perms;      // R=4 W=2 X=1
+    uint8_t  async_;     // SYNC=0 EXCEPTION=1 INTERRUPT=2
+    uint8_t  reg_id;
+};
+
+static const CapabilityT k_zero_cap = {false, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+static const uint8_t CTYPE_LINEAR     = 0;
+static const uint8_t CTYPE_NONLINEAR  = 1;
+static const uint8_t CTYPE_REVOC      = 2;
+static const uint8_t CTYPE_UNINIT     = 3;
+static const uint8_t CTYPE_SEALED     = 4;
+static const uint8_t CTYPE_SEALED_RET = 5;
+static const uint8_t CTYPE_EXIT       = 6;
+
+static CapabilityT cap_rf[32];
+
+static void cap_rf_reset() {
+    for (int i = 0; i < 32; ++i) cap_rf[i] = k_zero_cap;
+    // c1 = hardware root capability: covers all RAM, all permissions.
+    // Software reads this out and derives narrower capabilities from it.
+    cap_rf[1].valid     = true;
+    cap_rf[1].ctype     = CTYPE_LINEAR;
+    cap_rf[1].world     = 0;
+    cap_rf[1].rev_epoch = 0;
+    cap_rf[1].cursor    = RAM_BASE;
+    cap_rf[1].base      = RAM_BASE;
+    cap_rf[1].end_      = RAM_BASE + RAM_SIZE;
+    cap_rf[1].perms     = 7u;  // RWX
+    cap_rf[1].async_    = 0;
+    cap_rf[1].reg_id    = 1;
+    std::fprintf(stderr,
+        "[CAP-INIT] c1 = root cap: base=0x%llx end=0x%llx cursor=0x%llx perms=RWX\n",
+        (unsigned long long)RAM_BASE,
+        (unsigned long long)(RAM_BASE + RAM_SIZE),
+        (unsigned long long)RAM_BASE);
+}
+
+// cap_op_t values — must match the enum order in capstone.anvilh.
+static const uint32_t C_OP_NONE       =  0;
+static const uint32_t C_OP_MOVC       =  1;
+static const uint32_t C_OP_CINCOFFSET =  2;
+static const uint32_t C_OP_SCC        =  3;
+static const uint32_t C_OP_LCC        =  4;
+static const uint32_t C_OP_SHRINK     =  5;
+static const uint32_t C_OP_TIGHTEN    =  6;
+static const uint32_t C_OP_SPLIT      =  7;
+static const uint32_t C_OP_DELIN      =  8;
+static const uint32_t C_OP_MREV       =  9;
+static const uint32_t C_OP_DROP       = 10;
+static const uint32_t C_OP_SEAL       = 11;
+static const uint32_t C_OP_REVOKE     = 12;
+static const uint32_t C_OP_INIT       = 13;
+static const uint32_t C_OP_LDC        = 14;
+static const uint32_t C_OP_STC        = 15;
+static const uint32_t C_OP_CALL       = 16;
+static const uint32_t C_OP_RETURN     = 17;
+static const uint32_t C_OP_RETSEAL    = 18;
+static const uint32_t C_OP_CJALR      = 19;
+static const uint32_t C_OP_CBNZ       = 20;
+static const uint32_t C_OP_CAPENTER   = 21;
+static const uint32_t C_OP_CAPEXIT    = 22;
+
+static CapabilityT cpp_cap_clone(const CapabilityT& c) { return c; }
+
+static CapabilityT cpp_cap_invalidate(const CapabilityT& c, uint8_t revoked_type) {
+    CapabilityT r = c;
+    r.valid = false;
+    r.ctype = revoked_type;
+    return r;
+}
+
+static CapabilityT cpp_cap_retype(const CapabilityT& c, uint8_t new_type) {
+    CapabilityT r = c;
+    r.ctype = new_type;
+    return r;
+}
+
+static CapabilityT cpp_cap_set_world(const CapabilityT& c, uint8_t world) {
+    CapabilityT r = c;
+    r.world = world;
+    return r;
+}
+
+static CapabilityT cpp_cap_alu_exec(uint32_t op,
+                                     const CapabilityT& cap_a,
+                                     const CapabilityT& cap_b,
+                                     uint64_t scalar_arg) {
+    if (!cap_a.valid) return k_zero_cap;
+
+    if (op == C_OP_NONE) return cap_a;
+
+    if (op == C_OP_MOVC || op == C_OP_LCC || op == C_OP_LDC)
+        return cpp_cap_clone(cap_a);
+
+    if (op == C_OP_SCC || op == C_OP_STC)
+        return cpp_cap_clone(cap_b);
+
+    if (op == C_OP_CINCOFFSET) {
+        const uint64_t next_cursor = cap_a.cursor + scalar_arg;
+        if (next_cursor >= cap_a.base && next_cursor <= cap_a.end_) {
+            CapabilityT r = cap_a;
+            r.cursor = next_cursor;
+            return r;
+        }
+        return cpp_cap_invalidate(cap_a, CTYPE_UNINIT);
+    }
+
+    if (op == C_OP_SHRINK || op == C_OP_TIGHTEN) {
+        const uint64_t next_base = (cap_a.base > cap_b.base) ? cap_a.base : cap_b.base;
+        const uint64_t next_end  = (cap_a.end_ < cap_b.end_) ? cap_a.end_ : cap_b.end_;
+        if (next_base <= next_end) {
+            CapabilityT r = cap_a;
+            r.cursor = (cap_a.cursor < next_base) ? next_base
+                     : (cap_a.cursor > next_end)  ? next_end
+                     : cap_a.cursor;
+            r.base  = next_base;
+            r.end_  = next_end;
+            r.perms = cap_a.perms & cap_b.perms;
+            return r;
+        }
+        return cpp_cap_invalidate(cap_a, CTYPE_UNINIT);
+    }
+
+    if (op == C_OP_SPLIT) {
+        const uint64_t mid = (cap_a.base + cap_a.end_) / 2;
+        CapabilityT r = cap_a;
+        r.end_ = mid;
+        return r;
+    }
+
+    if (op == C_OP_DELIN || op == C_OP_DROP)
+        return cpp_cap_invalidate(cap_a, CTYPE_UNINIT);
+
+    if (op == C_OP_MREV || op == C_OP_REVOKE)
+        return cpp_cap_invalidate(cpp_cap_retype(cap_a, CTYPE_REVOC), CTYPE_REVOC);
+
+    if (op == C_OP_SEAL) {
+        CapabilityT r = cap_a;
+        r.valid  = cap_a.valid && cap_b.valid;
+        r.ctype  = CTYPE_SEALED;
+        r.reg_id = cap_b.reg_id;
+        return r;
+    }
+
+    if (op == C_OP_INIT) {
+        CapabilityT r = cap_b;
+        r.valid     = true;
+        r.ctype     = CTYPE_LINEAR;
+        r.world     = cap_a.world;
+        r.rev_epoch = cap_a.rev_epoch;
+        return r;
+    }
+
+    if (op == C_OP_CALL || op == C_OP_RETURN || op == C_OP_RETSEAL) {
+        CapabilityT r = cap_a;
+        r.ctype  = (op == C_OP_RETURN) ? CTYPE_LINEAR : CTYPE_SEALED_RET;
+        r.cursor = scalar_arg;
+        return r;
+    }
+
+    if (op == C_OP_CJALR) {
+        CapabilityT r = cap_a;
+        r.cursor = scalar_arg & ~static_cast<uint64_t>(1);
+        return r;
+    }
+
+    if (op == C_OP_CBNZ)
+        return (scalar_arg != 0) ? cap_a : k_zero_cap;
+
+    if (op == C_OP_CAPENTER)
+        return cpp_cap_set_world(cap_a, 1u);
+
+    if (op == C_OP_CAPEXIT)
+        return cpp_cap_set_world(cap_a, 0u);
+
+    return cap_a;
+}
+
+// Retire a cap instruction at WB: compute result and update cap_rf[rd], or
+// patch alu_result for SCC/CBNZ so the integer RF gets a cap-derived value.
+static void commit_cap_wb(Vtop___024root* rootp) {
+    const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
+    if (!((p[21u] >> 7u) & 1u)) return;   // valid (bit 679)
+    if ((p[2u] >> 6u) & 1u) return;       // skip if has_exc (bit 70)
+    const bool cap_write  = ((p[2u] >> 19u) & 1u) != 0u;  // ctrl.cap_write (bit 83)
+    const bool reg_write  = ((p[2u] >> 20u) & 1u) != 0u;  // ctrl.reg_write (bit 84)
+    if (!cap_write && !reg_write) return;
+
+    const uint32_t instr  = (p[18u] >> 7u) | ((p[19u] & 0x7fu) << 25u);
+    if ((instr & 0x7fu) != 0x0Bu) return;  // only Capstone custom opcode (0x0B)
+    const uint32_t rd     = (instr >>  7u) & 0x1fu;
+    const uint32_t rs1    = (instr >> 15u) & 0x1fu;
+    const uint32_t rs2    = (instr >> 20u) & 0x1fu;
+    const uint32_t cap_op = (p[2u] >> 7u) & 0x1fu;  // ctrl.cap_op (bits [75:71])
+
+    if (cap_write) {
+        const CapabilityT cap_a   = cap_rf[rs1];
+        const CapabilityT cap_b   = cap_rf[rs2];
+        const uint64_t scalar_arg = read_gpr(rootp, rs2);
+        const CapabilityT result  = cpp_cap_alu_exec(cap_op, cap_a, cap_b, scalar_arg);
+        std::fprintf(stderr,
+            "[CAP-WB cyc=%llu] op=%u instr=0x%08x rs1=%u rs2=%u rd=%u "
+            "valid=%d ctype=%u cursor=0x%llx base=0x%llx end=0x%llx perms=%u\n",
+            (unsigned long long)read_mcycle(rootp), cap_op, instr,
+            rs1, rs2, rd, (int)result.valid, (unsigned)result.ctype,
+            (unsigned long long)result.cursor,
+            (unsigned long long)result.base,
+            (unsigned long long)result.end_,
+            (unsigned)result.perms);
+        if (rd != 0u) cap_rf[rd] = result;
+    } else {
+        // SCC reads cursor; CBNZ reads valid flag; both patch the integer WB result.
+        uint64_t patched = 0;
+        if (cap_op == C_OP_SCC) {
+            patched = cap_rf[rs1].cursor;
+        } else if (cap_op == C_OP_CBNZ) {
+            patched = cap_rf[rs1].valid ? 1u : 0u;
+        } else {
+            return;
+        }
+        write_mem_wb_alu_result(rootp, patched);
+        if (rd != 0u) {
+            std::fprintf(stderr,
+                "[CAP-INT-WB cyc=%llu] op=%u instr=0x%08x rs1=%u rd=%u val=0x%llx\n",
+                (unsigned long long)read_mcycle(rootp), cap_op, instr,
+                rs1, rd, (unsigned long long)patched);
+        }
+    }
+}
+
 // Drive ext_mip_q: MTIP (bit 7) from CLINT mtimecmp, STIP (bit 5) from stimecmp_q_q.
 // Magic-address legacy mtimecmp kept for ISA tests that use it.
 //
@@ -1479,6 +1721,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    cap_rf_reset();
+
     if (!elf_path.empty()) {
         if (!load_elf(top->rootp, elf_path)) {
             top->final();
@@ -1522,6 +1766,7 @@ int main(int argc, char** argv) {
         update_ext_mip(top->rootp);
         apply_sie_masking(top->rootp);
         commit_stores(top->rootp);
+        commit_cap_wb(top->rootp);
         capture_div_from_id_ex(top->rootp);
         patch_div_results(top->rootp);
         // Let the PTW complete naturally. The RTL gates int_fire via pipeline_stall,
