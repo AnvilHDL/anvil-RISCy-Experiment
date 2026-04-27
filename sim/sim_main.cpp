@@ -1187,6 +1187,8 @@ static const uint8_t CTYPE_SEALED_RET = 5;
 static const uint8_t CTYPE_EXIT       = 6;
 
 static CapabilityT cap_rf[32];
+// Monotonic counter used by MREV to assign unique revocation epochs.
+static uint64_t rev_epoch_counter = 0;
 
 // Capability memory layout (32 bytes = 4 × uint64_t, CAP_BYTES-aligned):
 //   word 0: cursor
@@ -1462,25 +1464,85 @@ static void commit_ccsr_wb(Vtop___024root* rootp) {
 
 // Retire a cap instruction at WB: compute result and update cap_rf[rd], or
 // patch alu_result for SCC/CBNZ so the integer RF gets a cap-derived value.
+// MREV/REVOKE/DROP/DELIN are missing cap_write in ctrl.anvil so we detect
+// them by cap_op directly.
 static void commit_cap_wb(Vtop___024root* rootp) {
     const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
     if (!((p[21u] >> 7u) & 1u)) return;   // valid (bit 679)
     if ((p[2u] >> 6u) & 1u) return;       // skip if has_exc (bit 70)
-    const bool cap_write  = ((p[2u] >> 19u) & 1u) != 0u;  // ctrl.cap_write (bit 83)
-    const bool reg_write  = ((p[2u] >> 20u) & 1u) != 0u;  // ctrl.reg_write (bit 84)
-    if (!cap_write && !reg_write) return;
+    const bool     cap_write = ((p[2u] >> 19u) & 1u) != 0u;  // ctrl.cap_write (bit 83)
+    const bool     reg_write = ((p[2u] >> 20u) & 1u) != 0u;  // ctrl.reg_write (bit 84)
+    const uint32_t cap_op    = (p[2u] >> 7u) & 0x1fu;        // ctrl.cap_op (bits [75:71])
+    // MREV/REVOKE/DROP/DELIN are absent from cap_write in ctrl.anvil; handle them here.
+    const bool harness_cap = (cap_op == C_OP_MREV   || cap_op == C_OP_REVOKE ||
+                              cap_op == C_OP_DROP    || cap_op == C_OP_DELIN);
+    if (!cap_write && !reg_write && !harness_cap) return;
 
-    const uint32_t instr  = (p[18u] >> 7u) | ((p[19u] & 0x7fu) << 25u);
+    const uint32_t instr = (p[18u] >> 7u) | ((p[19u] & 0x7fu) << 25u);
     if ((instr & 0x7fu) != 0x0Bu) return;  // only Capstone custom opcode (0x0B)
-    const uint32_t rd     = (instr >>  7u) & 0x1fu;
-    const uint32_t rs1    = (instr >> 15u) & 0x1fu;
-    const uint32_t rs2    = (instr >> 20u) & 0x1fu;
-    const uint32_t cap_op = (p[2u] >> 7u) & 0x1fu;  // ctrl.cap_op (bits [75:71])
+    const uint32_t rd  = (instr >>  7u) & 0x1fu;
+    const uint32_t rs1 = (instr >> 15u) & 0x1fu;
+    const uint32_t rs2 = (instr >> 20u) & 0x1fu;
 
-    if (cap_write) {
+    if (cap_write || harness_cap) {
+        // MREV: assign new epoch to rs1, create revocation cap in rd.
+        // All future derivations from rs1 inherit the epoch and become revocable.
+        if (cap_op == C_OP_MREV) {
+            if (!cap_rf[rs1].valid) { if (rd != 0u) cap_rf[rd] = k_zero_cap; return; }
+            const uint64_t epoch = ++rev_epoch_counter;
+            if (rs1 != 0u) cap_rf[rs1].rev_epoch = epoch;
+            CapabilityT revoc    = cap_rf[rs1];
+            revoc.ctype          = CTYPE_REVOC;
+            revoc.rev_epoch      = epoch;
+            if (rd  != 0u) cap_rf[rd] = revoc;
+            std::fprintf(stderr,
+                "[CAP-MREV cyc=%llu] rs1=%u rd=%u epoch=%llu\n",
+                (unsigned long long)read_mcycle(rootp), rs1, rd,
+                (unsigned long long)epoch);
+            return;
+        }
+
+        // REVOKE: sweep cap_rf and cap_tags for caps that share the revocation epoch.
+        // Only caps derived AFTER MREV inherit the epoch, so pre-existing derivatives
+        // are not affected.  The revocation cap itself is consumed after the sweep.
+        if (cap_op == C_OP_REVOKE) {
+            if (cap_rf[rs1].ctype != CTYPE_REVOC) {
+                if (rd != 0u) cap_rf[rd] = k_zero_cap;
+                return;
+            }
+            const uint64_t epoch = cap_rf[rs1].rev_epoch;
+            int n = 0;
+            for (int i = 1; i < 32; ++i) {
+                if (cap_rf[i].valid && cap_rf[i].rev_epoch == epoch
+                        && cap_rf[i].ctype != CTYPE_REVOC) {
+                    cap_rf[i] = k_zero_cap;
+                    ++n;
+                }
+            }
+            const uint32_t n_slots = RAM_SIZE / CAP_BYTES;
+            for (uint32_t slot = 0; slot < n_slots; ++slot) {
+                if (!cap_tags[slot]) continue;
+                const CapabilityT c = cap_load_from_mem(
+                    RAM_BASE + static_cast<uint64_t>(slot) * CAP_BYTES);
+                if (c.rev_epoch == epoch && c.ctype != CTYPE_REVOC) {
+                    cap_tags[slot] = false;
+                    std::fill(host_mem + slot * CAP_BYTES,
+                              host_mem + (slot + 1u) * CAP_BYTES, 0u);
+                    ++n;
+                }
+            }
+            if (rs1 != 0u) cap_rf[rs1] = k_zero_cap;
+            if (rd  != 0u) cap_rf[rd]  = k_zero_cap;
+            std::fprintf(stderr,
+                "[CAP-REVOKE cyc=%llu] epoch=%llu swept=%d\n",
+                (unsigned long long)read_mcycle(rootp),
+                (unsigned long long)epoch, n);
+            return;
+        }
+
+        // LDC: load capability from memory
         CapabilityT result;
         if (cap_op == C_OP_LDC) {
-            // LDC rd, rs1: load capability from host_mem at address rs1_int.
             const uint64_t addr = read_gpr(rootp, rs1);
             result = cap_load_from_mem(addr);
             std::fprintf(stderr,
