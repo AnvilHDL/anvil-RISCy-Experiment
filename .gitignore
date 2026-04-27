@@ -1,12 +1,25 @@
+# Build outputs
 build/
 obj_dir/
 *.o
 *.d
 *.a
 *.sv
+
+# Compiled test and program binaries
 *.elf
 *.bin
+*.hex
+*.img
+
+# Verilator top-level executables
 Vtop
 Vpipeline_core
+
+# OS / editor noise
 .DS_Store
+*.swp
+*~
+
+# Claude Code project files
 .claude/
