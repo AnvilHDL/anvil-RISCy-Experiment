@@ -23,3 +23,6 @@ Vpipeline_core
 
 # Claude Code project files
 .claude/
+CLAUDE.md
+AGENTS.md
+TASK.md
