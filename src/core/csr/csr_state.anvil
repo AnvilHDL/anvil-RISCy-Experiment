@@ -1,0 +1,267 @@
+import "../../types/pipeline.anvilh"
+import "../../types/riscv.anvilh"
+
+// M-mode CSR state only.  S-mode CSRs (stvec, sscratch, sepc, scause, stval,
+// satp, mie, mip, medeleg, mideleg) and priv live as separate regs in
+// pipeline_core.anvil to keep struct field count at 10 and avoid exponential
+// expression-tree growth in the Anvil OCaml compiler.
+//
+// All struct-building functions have been removed to prevent compile-time blowup.
+// CSR state transitions are done inline in the pipeline proc using >> wire bindings.
+
+struct rv64i_csr_state_t {
+    mstatus  : xlen_t,
+    misa     : xlen_t,
+    mtvec    : xlen_t,
+    mscratch : xlen_t,
+    mepc     : xlen_t,
+    mcause   : xlen_t,
+    mtval    : xlen_t,
+    mcycle   : xlen_t,
+    minstret : xlen_t,
+    mhartid  : xlen_t
+}
+
+func csr_misa_boot() {
+    <(64'h8000000000000100)::xlen_t>
+}
+
+func mstatus_mie_mask()  { <(64'h0000000000000008)::xlen_t> }
+func mstatus_sie_mask()  { <(64'h0000000000000002)::xlen_t> }
+func mstatus_mpie_mask() { <(64'h0000000000000080)::xlen_t> }
+func mstatus_spie_mask() { <(64'h0000000000000020)::xlen_t> }
+func mstatus_spp_mask()  { <(64'h0000000000000100)::xlen_t> }
+func mstatus_mpp_mask()  { <(64'h0000000000001800)::xlen_t> }
+func sstatus_mask()      { <(64'h80000003000de162)::xlen_t> }
+
+func bit_is_set(val : xlen_t, mask : xlen_t) {
+    (val & mask) != <(64'd0)::xlen_t>
+}
+
+func set_mask_bit(val : xlen_t, mask : xlen_t, bit : logic) {
+    if bit == 1'b1 { val | mask } else { val & ~mask }
+}
+
+func priv_to_xlen(priv : priv_lvl_t) {
+    if priv == priv_lvl_t::PRIV_LVL_M { <(64'd3)::xlen_t> }
+    else if priv == priv_lvl_t::PRIV_LVL_S { <(64'd1)::xlen_t> }
+    else { <(64'd0)::xlen_t> }
+}
+
+func xlen_to_priv(val : xlen_t) {
+    if val[0+:2] == 2'b11 { priv_lvl_t::PRIV_LVL_M }
+    else if val[0+:2] == 2'b01 { priv_lvl_t::PRIV_LVL_S }
+    else { priv_lvl_t::PRIV_LVL_U }
+}
+
+func mstatus_with_mpp(mstatus : xlen_t, priv : priv_lvl_t) {
+    (mstatus & ~call mstatus_mpp_mask()) | (call priv_to_xlen(priv) << <(64'd11)::xlen_t>)
+}
+
+func mstatus_mpp(mstatus : xlen_t) {
+    call xlen_to_priv(<(#{62'd0, mstatus[11+:2]})::xlen_t>)
+}
+
+func mstatus_spp(mstatus : xlen_t) {
+    if call bit_is_set(mstatus, call mstatus_spp_mask()) == 1'b1 {
+        priv_lvl_t::PRIV_LVL_S
+    } else {
+        priv_lvl_t::PRIV_LVL_U
+    }
+}
+
+// Scalar helpers: compute updated mstatus for trap/return.  Return xlen_t only.
+func trap_m_mstatus(mstatus : xlen_t, cur_priv : priv_lvl_t) {
+    let m1 = call set_mask_bit(mstatus, call mstatus_mpie_mask(), call bit_is_set(mstatus, call mstatus_mie_mask()));
+    let m2 = call set_mask_bit(m1, call mstatus_mie_mask(), 1'b0);
+    call mstatus_with_mpp(m2, cur_priv)
+}
+
+func trap_s_mstatus(mstatus : xlen_t, cur_priv : priv_lvl_t) {
+    let s1 = call set_mask_bit(mstatus, call mstatus_spie_mask(), call bit_is_set(mstatus, call mstatus_sie_mask()));
+    let s2 = call set_mask_bit(s1, call mstatus_sie_mask(), 1'b0);
+    call set_mask_bit(s2, call mstatus_spp_mask(), if cur_priv == priv_lvl_t::PRIV_LVL_S { 1'b1 } else { 1'b0 })
+}
+
+func mret_new_mstatus(mstatus : xlen_t) {
+    let s1 = call set_mask_bit(mstatus, call mstatus_mie_mask(), call bit_is_set(mstatus, call mstatus_mpie_mask()));
+    let s2 = call set_mask_bit(s1, call mstatus_mpie_mask(), 1'b1);
+    call mstatus_with_mpp(s2, priv_lvl_t::PRIV_LVL_U)
+}
+
+func sret_new_mstatus(mstatus : xlen_t) {
+    let s1 = call set_mask_bit(mstatus, call mstatus_sie_mask(), call bit_is_set(mstatus, call mstatus_spie_mask()));
+    let s2 = call set_mask_bit(s1, call mstatus_spie_mask(), 1'b1);
+    call set_mask_bit(s2, call mstatus_spp_mask(), 1'b0)
+}
+
+// Boot state: called once during init, not inside any function chain.
+func csr_boot_state(mtvec : xlen_t) {
+    rv64i_csr_state_t::{
+        mstatus  = <(64'd0)::xlen_t>;
+        misa     = call csr_misa_boot();
+        mtvec    = mtvec;
+        mscratch = <(64'd0)::xlen_t>;
+        mepc     = <(64'd0)::xlen_t>;
+        mcause   = <(64'd0)::xlen_t>;
+        mtval    = <(64'd0)::xlen_t>;
+        mcycle   = <(64'd0)::xlen_t>;
+        minstret = <(64'd0)::xlen_t>;
+        mhartid  = <(64'd0)::xlen_t>
+    }
+}
+
+func is_mret_instr(instr : instr_t) {
+    instr == <(32'h30200073)::instr_t>
+}
+
+func is_sret_instr(instr : instr_t) {
+    instr == <(32'h10200073)::instr_t>
+}
+
+func is_ecall_instr(instr : instr_t) {
+    instr == <(32'h00000073)::instr_t>
+}
+
+func is_ebreak_instr(instr : instr_t) {
+    instr == <(32'h00100073)::instr_t>
+}
+
+func is_wfi_instr(instr : instr_t) {
+    instr == <(32'h10500073)::instr_t>
+}
+
+func is_sfence_vma_instr(instr : instr_t) {
+    instr[0+:7] == 7'b1110011 &&
+    instr[12+:3] == 3'b000 &&
+    instr[25+:7] == 7'b0001001
+}
+
+func is_csr_instr(instr : instr_t) {
+    instr[0+:7] == 7'b1110011 && instr[12+:3] != 3'b000
+}
+
+func is_pmp_csr(addr : csr_idx_t) {
+    (addr[8+:4] == 4'd3 && addr[4+:4] == 4'd10) ||
+    (addr[8+:4] == 4'd3 && addr[4+:4] == 4'd11)
+}
+
+func csr_is_supported(addr : csr_idx_t) {
+    addr == call csr_sstatus_idx() ||
+    addr == call csr_sie_idx() ||
+    addr == call csr_stvec_idx() ||
+    addr == call csr_sscratch_idx() ||
+    addr == call csr_sepc_idx() ||
+    addr == call csr_scause_idx() ||
+    addr == call csr_stval_idx() ||
+    addr == call csr_sip_idx() ||
+    addr == call csr_satp_idx() ||
+    addr == call csr_mstatus_idx() ||
+    addr == call csr_misa_idx() ||
+    addr == call csr_medeleg_idx() ||
+    addr == call csr_mideleg_idx() ||
+    addr == call csr_mie_idx() ||
+    addr == call csr_mtvec_idx() ||
+    addr == call csr_mscratch_idx() ||
+    addr == call csr_mepc_idx() ||
+    addr == call csr_mcause_idx() ||
+    addr == call csr_mtval_idx() ||
+    addr == call csr_mip_idx() ||
+    addr == call csr_mcycle_idx() ||
+    addr == call csr_minstret_idx() ||
+    addr == call csr_mhartid_idx() ||
+    addr == call csr_mcounteren_idx() ||
+    addr == call csr_time_idx() ||
+    addr == <(12'h106)::csr_idx_t> ||
+    addr == call csr_stimecmp_idx() ||
+    addr == call csr_menvcfg_idx() ||
+    call is_pmp_csr(addr) == 1'b1
+}
+
+func csr_min_priv(addr : csr_idx_t) {
+    if addr[8+:2] == 2'b11 { priv_lvl_t::PRIV_LVL_M }
+    else if addr[8+:2] == 2'b01 { priv_lvl_t::PRIV_LVL_S }
+    else { priv_lvl_t::PRIV_LVL_U }
+}
+
+func csr_access_allowed(priv : priv_lvl_t, addr : csr_idx_t) {
+    let req = call csr_min_priv(addr);
+    if priv == priv_lvl_t::PRIV_LVL_M { 1'b1 }
+    else if priv == priv_lvl_t::PRIV_LVL_S {
+        req == priv_lvl_t::PRIV_LVL_S || req == priv_lvl_t::PRIV_LVL_U
+    } else {
+        req == priv_lvl_t::PRIV_LVL_U
+    }
+}
+
+func csr_is_readonly(addr : csr_idx_t) {
+    addr[10+:2] == 2'b11
+}
+
+func csr_instr_zimm(instr : instr_t) {
+    <(#{59'd0, instr[15+:5]})::xlen_t>
+}
+
+func csr_instr_rs1_is_zero(instr : instr_t) {
+    instr[15+:5] == 5'd0
+}
+
+func csr_instr_write_value(instr : instr_t, rs1_val : xlen_t) {
+    if instr[12+:3] == 3'b101 || instr[12+:3] == 3'b110 || instr[12+:3] == 3'b111 {
+        call csr_instr_zimm(instr)
+    } else {
+        rs1_val
+    }
+}
+
+func csr_instr_new_value(instr : instr_t, old_val : xlen_t, rs1_val : xlen_t) {
+    let wr_src = call csr_instr_write_value(instr, rs1_val);
+    if instr[12+:3] == 3'b001 || instr[12+:3] == 3'b101 { wr_src }
+    else if instr[12+:3] == 3'b010 || instr[12+:3] == 3'b110 { old_val | wr_src }
+    else { old_val & ~wr_src }
+}
+
+func csr_instr_writes(instr : instr_t) {
+    if instr[12+:3] == 3'b001 || instr[12+:3] == 3'b101 {
+        1'b1
+    } else {
+        call csr_instr_rs1_is_zero(instr) == 1'b0
+    }
+}
+
+// priv passed explicitly (it is a separate reg in pipeline_core, not in the CSR struct).
+func system_instr_exc(priv : priv_lvl_t, instr : instr_t) {
+    let csr_addr = <(instr[20+:12])::csr_idx_t>;
+    if call is_ecall_instr(instr) == 1'b1 {
+        if priv == priv_lvl_t::PRIV_LVL_U {
+            exc_info_t::{has_exc = 1'b1; cause = 6'd8; tval = <(64'd0)::xlen_t>}
+        } else if priv == priv_lvl_t::PRIV_LVL_S {
+            exc_info_t::{has_exc = 1'b1; cause = 6'd9; tval = <(64'd0)::xlen_t>}
+        } else {
+            exc_info_t::{has_exc = 1'b1; cause = 6'd11; tval = <(64'd0)::xlen_t>}
+        }
+    } else if call is_ebreak_instr(instr) == 1'b1 {
+        exc_info_t::{has_exc = 1'b1; cause = 6'd3; tval = <(64'd0)::xlen_t>}
+    } else if call is_mret_instr(instr) == 1'b1 {
+        if priv == priv_lvl_t::PRIV_LVL_M { exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>} }
+        else { exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(instr)::xlen_t>} }
+    } else if call is_sret_instr(instr) == 1'b1 {
+        if priv == priv_lvl_t::PRIV_LVL_M || priv == priv_lvl_t::PRIV_LVL_S {
+            exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>}
+        } else {
+            exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(instr)::xlen_t>}
+        }
+    } else if call is_wfi_instr(instr) == 1'b1 || call is_sfence_vma_instr(instr) == 1'b1 {
+        exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>}
+    } else if call is_csr_instr(instr) == 1'b1 {
+        if call csr_is_supported(csr_addr) == 1'b0 ||
+           call csr_access_allowed(priv, csr_addr) == 1'b0 ||
+           (call csr_is_readonly(csr_addr) == 1'b1 && call csr_instr_writes(instr) == 1'b1) {
+            exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(instr)::xlen_t>}
+        } else {
+            exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>}
+        }
+    } else {
+        exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(instr)::xlen_t>}
+    }
+}
