@@ -5,6 +5,7 @@ import "../decode/immgen.anvil"
 import "../decode/ctrl.anvil"
 import "../execute/alu.anvil"
 import "../execute/branch.anvil"
+import "../execute/cap_alu.anvil"
 import "../hazard/forward.anvil"
 import "../hazard/hazard.anvil"
 import "../memory/mem_stage.anvil"
@@ -173,6 +174,12 @@ proc pipeline_core() {
     // Harness reads it and invalidates its C++ TLB.
     reg sv39_flush_q      : logic;
     reg regs_q : xlen_t[32];
+    // Capability register file — decomposed into 10 parallel xlen_t[32] arrays, one per
+    // capability_t field.  A single capability_t[32] array causes the Anvil OCaml elaborator
+    // to OOM when generating the wide struct mux tree.  Splitting into primitive arrays keeps
+    // each read as a simple 32-to-1 mux of scalar values, which elaborates in polynomial time.
+    // All arrays are zero-initialised by Verilator; valid bit = 0 means null/invalid cap.
+    reg cap_valid_q  : xlen_t[32];  // bit 0 = valid (minimal test)
     // Memory side-channels: large arrays moved to C++ host_mem[] to stay within Anvil budget.
     reg mem_rdata_q       : xlen_t;   // harness pre-populates with load data before each tick
     reg imem_rdata_q      : instr_t;  // harness pre-populates with fetch word before each tick
@@ -291,6 +298,20 @@ proc pipeline_core() {
 
             if wb_fire == 1'b1 {
                 set regs_q[cur_mem_wb.rd] := wb_data
+            } else {
+                ()
+            };
+
+            // Cap register writeback: commit cap_result to cap_regs_q when the retiring
+            // instruction has cap_write=1 and no exception is pending.
+            let cap_wb_fire =
+                cur_mem_wb.valid == 1'b1 &&
+                cur_mem_wb.ctrl.cap_write == 1'b1 &&
+                cur_mem_wb.exc.has_exc == 1'b0 &&
+                int_fire == 1'b0 &&
+                pipeline_stall == 1'b0 >>
+            if cap_wb_fire == 1'b1 {
+                () // TODO: cap register writes
             } else {
                 ()
             };
@@ -623,7 +644,7 @@ proc pipeline_core() {
                         branch_taken = if ex_final_exc.has_exc == 1'b1 { 1'b0 } else { ex_br_res.taken };
                         branch_tgt = ex_br_res.target;
                         cap_target_reg = cur_id_ex.cap_target_reg;
-                        cap_result = call zero_cap();
+                        cap_result = call zero_cap(); // TODO: replace with cap_alu_exec once elaborator limits are resolved
                         csr_addr = ex_csr_addr;
                         csr_new_val = ex_csr_new_val;
                         csr_we = ex_csr_we;
@@ -686,12 +707,12 @@ proc pipeline_core() {
                     rd = call rd_of(cur_if_id.fetched.instr);
                     rs1_val = dec_rs1_raw;
                     rs2_val = dec_rs2_raw;
-                    cap_rs1_val = call zero_cap();
-                    cap_rs2_val = call zero_cap();
+                    cap_rs1_val = call zero_cap(); // TODO: replace with make_cap once elaborator limits are resolved
+                    cap_rs2_val = call zero_cap(); // TODO: replace with make_cap once elaborator limits are resolved
                     imm = call decode_imm(cur_if_id.fetched.instr);
                     predicted_taken = cur_if_id.predicted_taken;
                     predicted_target = cur_if_id.predicted_target;
-                    cap_target_reg = cur_if_id.cap_target_reg;
+                    cap_target_reg = call rd_of(cur_if_id.fetched.instr);
                     cap_result = cur_if_id.cap_result;
                     ctrl = dec_ctrl.ctrl;
                     exc = dec_exc
