@@ -1,0 +1,12 @@
+build/
+obj_dir/
+*.o
+*.d
+*.a
+*.sv
+*.elf
+*.bin
+Vtop
+Vpipeline_core
+.DS_Store
+.claude/
