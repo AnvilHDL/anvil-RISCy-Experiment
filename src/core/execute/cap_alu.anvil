@@ -1,0 +1,224 @@
+import "../../types/pipeline.anvilh"
+import "../top/packet_utils.anvil"
+
+// Capability arithmetic stays pure and side-effect free.
+// The core uses the returned value plus explicit writeback/domain state to
+// model revocation and world changes.
+
+func cap_min(a : xlen_t, b : xlen_t) {
+    if a < b { a } else { b }
+}
+
+func cap_max(a : xlen_t, b : xlen_t) {
+    if a < b { b } else { a }
+}
+
+func cap_perms_and(a : cap_perm_t, b : cap_perm_t) {
+    <(<(a)::logic[3]> & <(b)::logic[3]>)::cap_perm_t>
+}
+
+func cap_clone(cap : capability_t) {
+    cap
+}
+
+func cap_invalidate(cap : capability_t, revoked : cap_type_t) {
+    capability_t::{
+        valid = 1'b0;
+        ctype = revoked;
+        world = cap.world;
+        rev_epoch = cap.rev_epoch;
+        cursor = cap.cursor;
+        base = cap.base;
+        end_ = cap.end_;
+        perms = cap.perms;
+        async = cap.async;
+        reg_id = cap.reg_id
+    }
+}
+
+func cap_retype(cap : capability_t, ctype : cap_type_t) {
+    capability_t::{
+        valid = cap.valid;
+        ctype = ctype;
+        world = cap.world;
+        rev_epoch = cap.rev_epoch;
+        cursor = cap.cursor;
+        base = cap.base;
+        end_ = cap.end_;
+        perms = cap.perms;
+        async = cap.async;
+        reg_id = cap.reg_id
+    }
+}
+
+func cap_set_world(cap : capability_t, world : world_t) {
+    capability_t::{
+        valid = cap.valid;
+        ctype = cap.ctype;
+        world = world;
+        rev_epoch = cap.rev_epoch;
+        cursor = cap.cursor;
+        base = cap.base;
+        end_ = cap.end_;
+        perms = cap.perms;
+        async = cap.async;
+        reg_id = cap.reg_id
+    }
+}
+
+func cap_set_epoch(cap : capability_t, epoch : xlen_t) {
+    capability_t::{
+        valid = cap.valid;
+        ctype = cap.ctype;
+        world = cap.world;
+        rev_epoch = epoch;
+        cursor = cap.cursor;
+        base = cap.base;
+        end_ = cap.end_;
+        perms = cap.perms;
+        async = cap.async;
+        reg_id = cap.reg_id
+    }
+}
+
+func cap_bounds_valid(base : xlen_t, end_ : xlen_t) {
+    base <= end_
+}
+
+func cap_cursor_valid(cap : capability_t, cursor : xlen_t) {
+    cursor >= cap.base && cursor <= cap.end_
+}
+
+func cap_alu_exec(op : cap_op_t,
+                  cap_a : capability_t,
+                  cap_b : capability_t,
+                  scalar_arg : xlen_t) {
+    if cap_a.valid == 1'b0 {
+        call zero_cap()
+    } else if op == cap_op_t::CAP_OP_NONE {
+        cap_a
+    } else if op == cap_op_t::CAP_OP_MOVC || op == cap_op_t::CAP_OP_LCC || op == cap_op_t::CAP_OP_LDC {
+        call cap_clone(cap_a)
+    } else if op == cap_op_t::CAP_OP_SCC || op == cap_op_t::CAP_OP_STC {
+        call cap_clone(cap_b)
+    } else if op == cap_op_t::CAP_OP_CINCOFFSET {
+        let next_cursor = cap_a.cursor + scalar_arg;
+        if call cap_cursor_valid(cap_a, next_cursor) == 1'b1 {
+            capability_t::{
+                valid = cap_a.valid;
+                ctype = cap_a.ctype;
+                world = cap_a.world;
+                rev_epoch = cap_a.rev_epoch;
+                cursor = next_cursor;
+                base = cap_a.base;
+                end_ = cap_a.end_;
+                perms = cap_a.perms;
+                async = cap_a.async;
+                reg_id = cap_a.reg_id
+            }
+        } else {
+            call cap_invalidate(cap_a, cap_type_t::CAP_UNINIT)
+        }
+    } else if op == cap_op_t::CAP_OP_SHRINK || op == cap_op_t::CAP_OP_TIGHTEN {
+        let next_base = call cap_max(cap_a.base, cap_b.base);
+        let next_end = call cap_min(cap_a.end_, cap_b.end_);
+        if call cap_bounds_valid(next_base, next_end) == 1'b1 {
+            capability_t::{
+                valid = cap_a.valid;
+                ctype = cap_a.ctype;
+                world = cap_a.world;
+                rev_epoch = cap_a.rev_epoch;
+                cursor = if cap_a.cursor < next_base { next_base } else if cap_a.cursor > next_end { next_end } else { cap_a.cursor };
+                base = next_base;
+                end_ = next_end;
+                perms = call cap_perms_and(cap_a.perms, cap_b.perms);
+                async = cap_a.async;
+                reg_id = cap_a.reg_id
+            }
+        } else {
+            call cap_invalidate(cap_a, cap_type_t::CAP_UNINIT)
+        }
+    } else if op == cap_op_t::CAP_OP_SPLIT {
+        let mid = (cap_a.base + cap_a.end_) >> 1;
+        capability_t::{
+            valid = cap_a.valid;
+            ctype = cap_a.ctype;
+            world = cap_a.world;
+            rev_epoch = cap_a.rev_epoch;
+            cursor = cap_a.cursor;
+            base = cap_a.base;
+            end_ = mid;
+            perms = cap_a.perms;
+            async = cap_a.async;
+            reg_id = cap_a.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_DELIN || op == cap_op_t::CAP_OP_DROP {
+        call cap_invalidate(cap_a, cap_type_t::CAP_UNINIT)
+    } else if op == cap_op_t::CAP_OP_MREV || op == cap_op_t::CAP_OP_REVOKE {
+        call cap_invalidate(call cap_retype(cap_a, cap_type_t::CAP_REVOCATION), cap_type_t::CAP_REVOCATION)
+    } else if op == cap_op_t::CAP_OP_SEAL {
+        capability_t::{
+            valid = cap_a.valid && cap_b.valid;
+            ctype = cap_type_t::CAP_SEALED;
+            world = cap_a.world;
+            rev_epoch = cap_a.rev_epoch;
+            cursor = cap_a.cursor;
+            base = cap_a.base;
+            end_ = cap_a.end_;
+            perms = cap_a.perms;
+            async = cap_a.async;
+            reg_id = cap_b.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_INIT {
+        capability_t::{
+            valid = 1'b1;
+            ctype = cap_type_t::CAP_LINEAR;
+            world = cap_a.world;
+            rev_epoch = cap_a.rev_epoch;
+            cursor = cap_b.cursor;
+            base = cap_b.base;
+            end_ = cap_b.end_;
+            perms = cap_b.perms;
+            async = cap_b.async;
+            reg_id = cap_b.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_CALL || op == cap_op_t::CAP_OP_RETURN || op == cap_op_t::CAP_OP_RETSEAL {
+        capability_t::{
+            valid = cap_a.valid;
+            ctype = if op == cap_op_t::CAP_OP_RETURN { cap_type_t::CAP_LINEAR } else { cap_type_t::CAP_SEALED_RET };
+            world = cap_a.world;
+            rev_epoch = cap_a.rev_epoch;
+            cursor = scalar_arg;
+            base = cap_a.base;
+            end_ = cap_a.end_;
+            perms = cap_a.perms;
+            async = cap_a.async;
+            reg_id = cap_a.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_CJALR {
+        capability_t::{
+            valid = cap_a.valid;
+            ctype = cap_a.ctype;
+            world = cap_a.world;
+            rev_epoch = cap_a.rev_epoch;
+            cursor = scalar_arg & <(64'hfffffffffffffffe)::xlen_t>;
+            base = cap_a.base;
+            end_ = cap_a.end_;
+            perms = cap_a.perms;
+            async = cap_a.async;
+            reg_id = cap_a.reg_id
+        }
+    } else if op == cap_op_t::CAP_OP_CBNZ {
+        if scalar_arg != <(64'd0)::xlen_t> {
+            cap_a
+        } else {
+            call zero_cap()
+        }
+    } else if op == cap_op_t::CAP_OP_CAPENTER {
+        call cap_set_world(cap_a, world_t::WORLD_SECURE)
+    } else if op == cap_op_t::CAP_OP_CAPEXIT {
+        call cap_set_world(cap_a, world_t::WORLD_NORMAL)
+    } else {
+        cap_a
+    }
+}

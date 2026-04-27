@@ -1,0 +1,637 @@
+import "../../types/pipeline.anvilh"
+
+// The ALU is pure combinational logic.
+//
+// Implementation-plan alignment:
+// - dynamic shifts now rely on compiler builtins `shl_dyn` / `shr_dyn` /
+//   `sra_dyn` instead of enormous hand-unrolled if-else ladders,
+// - W-ops keep their own 5-bit shamt handling and 32-bit sign-extension
+//   behavior.
+
+func signed_lt(lhs : xlen_t, rhs : xlen_t) {
+    if lhs[63] != rhs[63] { lhs[63] }
+    else { lhs < rhs }
+}
+
+func signed_ge(lhs : xlen_t, rhs : xlen_t) {
+    if call signed_lt(lhs, rhs) == 1'b1 { 1'b0 } else { 1'b1 }
+}
+
+func unsigned_lt(lhs : xlen_t, rhs : xlen_t) {
+    if lhs[63] != rhs[63] {
+        lhs[63] == 1'b0 && rhs[63] == 1'b1
+    } else {
+        lhs[0+:63] < rhs[0+:63]
+    }
+}
+
+func unsigned_ge(lhs : xlen_t, rhs : xlen_t) {
+    if call unsigned_lt(lhs, rhs) == 1'b1 { 1'b0 } else { 1'b1 }
+}
+
+func shamt6(rhs : xlen_t) {
+    rhs[0+:6]
+}
+
+func shamt5(rhs : xlen_t) {
+    rhs[0+:5]
+}
+
+func sext32_result(raw : logic[32]) {
+    let base = <(raw)::xlen_t>;
+    if raw[31] == 1'b1 { base + <(64'hffffffff00000000)::xlen_t> } else { base }
+}
+
+func zext32_to_xlen(v : logic[32]) {
+    <(#{32'd0, v})::xlen_t>
+}
+
+func zext16_to_xlen(v : logic[16]) {
+    <(#{48'd0, v})::xlen_t>
+}
+
+func shr16(v : xlen_t) {
+    <(#{16'd0, v[16+:48]})::xlen_t>
+}
+
+func xlen_from_limbs16(l0 : logic[16], l1 : logic[16], l2 : logic[16], l3 : logic[16]) {
+    <(#{l3, l2, l1, l0})::xlen_t>
+}
+
+struct mul_parts_t {
+    lo : xlen_t,
+    hi : xlen_t
+}
+
+
+func mul16_u(a : logic[16], b : logic[16]) {
+    // Anvil widens `*` to the sum of operand widths, so explicitly slice the
+    // low 64 bits back out to keep the helper's type small and predictable.
+    let a64 = call zext16_to_xlen(a);
+    let b64 = call zext16_to_xlen(b);
+    let product = a64 * b64;
+    <(product[0+:64])::xlen_t>
+}
+
+func mul_u64_parts(lhs : xlen_t, rhs : xlen_t) {
+    let a0 = lhs[0+:16];
+    let a1 = lhs[16+:16];
+    let a2 = lhs[32+:16];
+    let a3 = lhs[48+:16];
+    let b0 = rhs[0+:16];
+    let b1 = rhs[16+:16];
+    let b2 = rhs[32+:16];
+    let b3 = rhs[48+:16];
+
+    let p00 = call mul16_u(a0, b0);
+    let p01 = call mul16_u(a0, b1);
+    let p02 = call mul16_u(a0, b2);
+    let p03 = call mul16_u(a0, b3);
+    let p10 = call mul16_u(a1, b0);
+    let p11 = call mul16_u(a1, b1);
+    let p12 = call mul16_u(a1, b2);
+    let p13 = call mul16_u(a1, b3);
+    let p20 = call mul16_u(a2, b0);
+    let p21 = call mul16_u(a2, b1);
+    let p22 = call mul16_u(a2, b2);
+    let p23 = call mul16_u(a2, b3);
+    let p30 = call mul16_u(a3, b0);
+    let p31 = call mul16_u(a3, b1);
+    let p32 = call mul16_u(a3, b2);
+    let p33 = call mul16_u(a3, b3);
+
+    let s0 = p00;
+    let r0 = s0[0+:16];
+    let c0 = call shr16(s0);
+
+    let s1 = c0 + p01 + p10;
+    let r1 = s1[0+:16];
+    let c1 = call shr16(s1);
+
+    let s2 = c1 + p02 + p11 + p20;
+    let r2 = s2[0+:16];
+    let c2 = call shr16(s2);
+
+    let s3 = c2 + p03 + p12 + p21 + p30;
+    let r3 = s3[0+:16];
+    let c3 = call shr16(s3);
+
+    let s4 = c3 + p13 + p22 + p31;
+    let r4 = s4[0+:16];
+    let c4 = call shr16(s4);
+
+    let s5 = c4 + p23 + p32;
+    let r5 = s5[0+:16];
+    let c5 = call shr16(s5);
+
+    let s6 = c5 + p33;
+    let r6 = s6[0+:16];
+    let c6 = call shr16(s6);
+
+    mul_parts_t::{
+        lo = call xlen_from_limbs16(r0, r1, r2, r3);
+        hi = call xlen_from_limbs16(r4, r5, r6, c6[0+:16])
+    }
+}
+
+func mul_low(lhs : xlen_t, rhs : xlen_t) {
+    let parts = call mul_u64_parts(lhs, rhs);
+    parts.lo
+}
+
+func mulhu(lhs : xlen_t, rhs : xlen_t) {
+    let parts = call mul_u64_parts(lhs, rhs);
+    parts.hi
+}
+
+func mulhsu(lhs : xlen_t, rhs : xlen_t) {
+    let unsigned_hi = call mulhu(lhs, rhs);
+    if lhs[63] == 1'b1 { unsigned_hi - rhs } else { unsigned_hi }
+}
+
+func mulh(lhs : xlen_t, rhs : xlen_t) {
+    let unsigned_hi = call mulhu(lhs, rhs);
+    let lhs_corr = if lhs[63] == 1'b1 { rhs } else { <(64'd0)::xlen_t> };
+    let rhs_corr = if rhs[63] == 1'b1 { lhs } else { <(64'd0)::xlen_t> };
+    unsigned_hi - lhs_corr - rhs_corr
+}
+
+func mulw(lhs : xlen_t, rhs : xlen_t) {
+    call sext32_result(call mul_low(lhs, rhs)[0+:32])
+}
+
+func logical_shl(lhs : xlen_t, rhs : xlen_t) {
+    call shl_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>)
+}
+
+func logical_shr(lhs : xlen_t, rhs : xlen_t) {
+    call shr_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>)
+}
+
+func sra_fill_mask_64(rhs : xlen_t) {
+    let shamt = <(#{58'd0, call shamt6(rhs)})::xlen_t>;
+    if call shamt6(rhs) == 6'd0 {
+        <(64'd0)::xlen_t>
+    } else {
+        ~(call shr_dyn(<(64'hffffffffffffffff)::xlen_t>, shamt))
+    }
+}
+
+func arithmetic_shr(lhs : xlen_t, rhs : xlen_t) {
+    let logical = call shr_dyn(lhs, <(#{58'd0, call shamt6(rhs)})::xlen_t>);
+    if lhs[63] == 1'b1 { logical | call sra_fill_mask_64(rhs) } else { logical }
+}
+
+func logical_shl_32(lhs : xlen_t, rhs : xlen_t) {
+    let shamt = <(#{59'd0, call shamt5(rhs)})::xlen_t>;
+    let word = <(#{32'd0, lhs[0+:32]})::xlen_t>;
+    call shl_dyn(word, shamt)
+}
+
+func logical_shr_32(lhs : xlen_t, rhs : xlen_t) {
+    let shamt = <(#{59'd0, call shamt5(rhs)})::xlen_t>;
+    let word = <(#{32'd0, lhs[0+:32]})::xlen_t>;
+    call shr_dyn(word, shamt)
+}
+
+func sra_fill_mask_32(rhs : xlen_t) {
+    let shamt = <(#{59'd0, call shamt5(rhs)})::xlen_t>;
+    if call shamt5(rhs) == 5'd0 {
+        <(64'd0)::xlen_t>
+    } else {
+        ~(call shr_dyn(<(64'hffffffffffffffff)::xlen_t>, shamt))
+    }
+}
+
+func arithmetic_shr_32(lhs : xlen_t, rhs : xlen_t) {
+    let shamt = <(#{59'd0, call shamt5(rhs)})::xlen_t>;
+    let logical = call shr_dyn(lhs, shamt);
+    if lhs[63] == 1'b1 { logical | call sra_fill_mask_32(rhs) } else { logical }
+}
+
+// ---- Division: flat 64-step restoring binary divider ----
+// Single function; all 64 steps are plain let bindings so the Anvil
+// elaborator never copies an AST subtree more than once.
+// Returns mul_parts_t::{ lo = quotient; hi = remainder }.
+func divu64_full(a : xlen_t, b : xlen_t) {
+    let q0 = a;
+    let r0 = <(64'd0)::xlen_t>;
+    let nr1 = <(#{r0[0+:63], q0[63+:1]})::xlen_t>;
+    let c1  = if r0[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr1, b) };
+    let r1  = if c1 == 1'b1 { nr1 - b } else { nr1 };
+    let qb1 = if c1 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q1  = <(#{q0[0+:63], qb1[0+:1]})::xlen_t>;
+    let nr2 = <(#{r1[0+:63], q1[63+:1]})::xlen_t>;
+    let c2  = if r1[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr2, b) };
+    let r2  = if c2 == 1'b1 { nr2 - b } else { nr2 };
+    let qb2 = if c2 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q2  = <(#{q1[0+:63], qb2[0+:1]})::xlen_t>;
+    let nr3 = <(#{r2[0+:63], q2[63+:1]})::xlen_t>;
+    let c3  = if r2[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr3, b) };
+    let r3  = if c3 == 1'b1 { nr3 - b } else { nr3 };
+    let qb3 = if c3 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q3  = <(#{q2[0+:63], qb3[0+:1]})::xlen_t>;
+    let nr4 = <(#{r3[0+:63], q3[63+:1]})::xlen_t>;
+    let c4  = if r3[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr4, b) };
+    let r4  = if c4 == 1'b1 { nr4 - b } else { nr4 };
+    let qb4 = if c4 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q4  = <(#{q3[0+:63], qb4[0+:1]})::xlen_t>;
+    let nr5 = <(#{r4[0+:63], q4[63+:1]})::xlen_t>;
+    let c5  = if r4[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr5, b) };
+    let r5  = if c5 == 1'b1 { nr5 - b } else { nr5 };
+    let qb5 = if c5 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q5  = <(#{q4[0+:63], qb5[0+:1]})::xlen_t>;
+    let nr6 = <(#{r5[0+:63], q5[63+:1]})::xlen_t>;
+    let c6  = if r5[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr6, b) };
+    let r6  = if c6 == 1'b1 { nr6 - b } else { nr6 };
+    let qb6 = if c6 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q6  = <(#{q5[0+:63], qb6[0+:1]})::xlen_t>;
+    let nr7 = <(#{r6[0+:63], q6[63+:1]})::xlen_t>;
+    let c7  = if r6[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr7, b) };
+    let r7  = if c7 == 1'b1 { nr7 - b } else { nr7 };
+    let qb7 = if c7 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q7  = <(#{q6[0+:63], qb7[0+:1]})::xlen_t>;
+    let nr8 = <(#{r7[0+:63], q7[63+:1]})::xlen_t>;
+    let c8  = if r7[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr8, b) };
+    let r8  = if c8 == 1'b1 { nr8 - b } else { nr8 };
+    let qb8 = if c8 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q8  = <(#{q7[0+:63], qb8[0+:1]})::xlen_t>;
+    let nr9 = <(#{r8[0+:63], q8[63+:1]})::xlen_t>;
+    let c9  = if r8[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr9, b) };
+    let r9  = if c9 == 1'b1 { nr9 - b } else { nr9 };
+    let qb9 = if c9 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q9  = <(#{q8[0+:63], qb9[0+:1]})::xlen_t>;
+    let nr10 = <(#{r9[0+:63], q9[63+:1]})::xlen_t>;
+    let c10  = if r9[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr10, b) };
+    let r10  = if c10 == 1'b1 { nr10 - b } else { nr10 };
+    let qb10 = if c10 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q10  = <(#{q9[0+:63], qb10[0+:1]})::xlen_t>;
+    let nr11 = <(#{r10[0+:63], q10[63+:1]})::xlen_t>;
+    let c11  = if r10[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr11, b) };
+    let r11  = if c11 == 1'b1 { nr11 - b } else { nr11 };
+    let qb11 = if c11 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q11  = <(#{q10[0+:63], qb11[0+:1]})::xlen_t>;
+    let nr12 = <(#{r11[0+:63], q11[63+:1]})::xlen_t>;
+    let c12  = if r11[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr12, b) };
+    let r12  = if c12 == 1'b1 { nr12 - b } else { nr12 };
+    let qb12 = if c12 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q12  = <(#{q11[0+:63], qb12[0+:1]})::xlen_t>;
+    let nr13 = <(#{r12[0+:63], q12[63+:1]})::xlen_t>;
+    let c13  = if r12[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr13, b) };
+    let r13  = if c13 == 1'b1 { nr13 - b } else { nr13 };
+    let qb13 = if c13 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q13  = <(#{q12[0+:63], qb13[0+:1]})::xlen_t>;
+    let nr14 = <(#{r13[0+:63], q13[63+:1]})::xlen_t>;
+    let c14  = if r13[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr14, b) };
+    let r14  = if c14 == 1'b1 { nr14 - b } else { nr14 };
+    let qb14 = if c14 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q14  = <(#{q13[0+:63], qb14[0+:1]})::xlen_t>;
+    let nr15 = <(#{r14[0+:63], q14[63+:1]})::xlen_t>;
+    let c15  = if r14[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr15, b) };
+    let r15  = if c15 == 1'b1 { nr15 - b } else { nr15 };
+    let qb15 = if c15 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q15  = <(#{q14[0+:63], qb15[0+:1]})::xlen_t>;
+    let nr16 = <(#{r15[0+:63], q15[63+:1]})::xlen_t>;
+    let c16  = if r15[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr16, b) };
+    let r16  = if c16 == 1'b1 { nr16 - b } else { nr16 };
+    let qb16 = if c16 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q16  = <(#{q15[0+:63], qb16[0+:1]})::xlen_t>;
+    let nr17 = <(#{r16[0+:63], q16[63+:1]})::xlen_t>;
+    let c17  = if r16[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr17, b) };
+    let r17  = if c17 == 1'b1 { nr17 - b } else { nr17 };
+    let qb17 = if c17 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q17  = <(#{q16[0+:63], qb17[0+:1]})::xlen_t>;
+    let nr18 = <(#{r17[0+:63], q17[63+:1]})::xlen_t>;
+    let c18  = if r17[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr18, b) };
+    let r18  = if c18 == 1'b1 { nr18 - b } else { nr18 };
+    let qb18 = if c18 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q18  = <(#{q17[0+:63], qb18[0+:1]})::xlen_t>;
+    let nr19 = <(#{r18[0+:63], q18[63+:1]})::xlen_t>;
+    let c19  = if r18[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr19, b) };
+    let r19  = if c19 == 1'b1 { nr19 - b } else { nr19 };
+    let qb19 = if c19 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q19  = <(#{q18[0+:63], qb19[0+:1]})::xlen_t>;
+    let nr20 = <(#{r19[0+:63], q19[63+:1]})::xlen_t>;
+    let c20  = if r19[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr20, b) };
+    let r20  = if c20 == 1'b1 { nr20 - b } else { nr20 };
+    let qb20 = if c20 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q20  = <(#{q19[0+:63], qb20[0+:1]})::xlen_t>;
+    let nr21 = <(#{r20[0+:63], q20[63+:1]})::xlen_t>;
+    let c21  = if r20[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr21, b) };
+    let r21  = if c21 == 1'b1 { nr21 - b } else { nr21 };
+    let qb21 = if c21 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q21  = <(#{q20[0+:63], qb21[0+:1]})::xlen_t>;
+    let nr22 = <(#{r21[0+:63], q21[63+:1]})::xlen_t>;
+    let c22  = if r21[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr22, b) };
+    let r22  = if c22 == 1'b1 { nr22 - b } else { nr22 };
+    let qb22 = if c22 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q22  = <(#{q21[0+:63], qb22[0+:1]})::xlen_t>;
+    let nr23 = <(#{r22[0+:63], q22[63+:1]})::xlen_t>;
+    let c23  = if r22[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr23, b) };
+    let r23  = if c23 == 1'b1 { nr23 - b } else { nr23 };
+    let qb23 = if c23 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q23  = <(#{q22[0+:63], qb23[0+:1]})::xlen_t>;
+    let nr24 = <(#{r23[0+:63], q23[63+:1]})::xlen_t>;
+    let c24  = if r23[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr24, b) };
+    let r24  = if c24 == 1'b1 { nr24 - b } else { nr24 };
+    let qb24 = if c24 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q24  = <(#{q23[0+:63], qb24[0+:1]})::xlen_t>;
+    let nr25 = <(#{r24[0+:63], q24[63+:1]})::xlen_t>;
+    let c25  = if r24[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr25, b) };
+    let r25  = if c25 == 1'b1 { nr25 - b } else { nr25 };
+    let qb25 = if c25 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q25  = <(#{q24[0+:63], qb25[0+:1]})::xlen_t>;
+    let nr26 = <(#{r25[0+:63], q25[63+:1]})::xlen_t>;
+    let c26  = if r25[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr26, b) };
+    let r26  = if c26 == 1'b1 { nr26 - b } else { nr26 };
+    let qb26 = if c26 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q26  = <(#{q25[0+:63], qb26[0+:1]})::xlen_t>;
+    let nr27 = <(#{r26[0+:63], q26[63+:1]})::xlen_t>;
+    let c27  = if r26[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr27, b) };
+    let r27  = if c27 == 1'b1 { nr27 - b } else { nr27 };
+    let qb27 = if c27 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q27  = <(#{q26[0+:63], qb27[0+:1]})::xlen_t>;
+    let nr28 = <(#{r27[0+:63], q27[63+:1]})::xlen_t>;
+    let c28  = if r27[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr28, b) };
+    let r28  = if c28 == 1'b1 { nr28 - b } else { nr28 };
+    let qb28 = if c28 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q28  = <(#{q27[0+:63], qb28[0+:1]})::xlen_t>;
+    let nr29 = <(#{r28[0+:63], q28[63+:1]})::xlen_t>;
+    let c29  = if r28[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr29, b) };
+    let r29  = if c29 == 1'b1 { nr29 - b } else { nr29 };
+    let qb29 = if c29 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q29  = <(#{q28[0+:63], qb29[0+:1]})::xlen_t>;
+    let nr30 = <(#{r29[0+:63], q29[63+:1]})::xlen_t>;
+    let c30  = if r29[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr30, b) };
+    let r30  = if c30 == 1'b1 { nr30 - b } else { nr30 };
+    let qb30 = if c30 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q30  = <(#{q29[0+:63], qb30[0+:1]})::xlen_t>;
+    let nr31 = <(#{r30[0+:63], q30[63+:1]})::xlen_t>;
+    let c31  = if r30[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr31, b) };
+    let r31  = if c31 == 1'b1 { nr31 - b } else { nr31 };
+    let qb31 = if c31 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q31  = <(#{q30[0+:63], qb31[0+:1]})::xlen_t>;
+    let nr32 = <(#{r31[0+:63], q31[63+:1]})::xlen_t>;
+    let c32  = if r31[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr32, b) };
+    let r32  = if c32 == 1'b1 { nr32 - b } else { nr32 };
+    let qb32 = if c32 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q32  = <(#{q31[0+:63], qb32[0+:1]})::xlen_t>;
+    let nr33 = <(#{r32[0+:63], q32[63+:1]})::xlen_t>;
+    let c33  = if r32[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr33, b) };
+    let r33  = if c33 == 1'b1 { nr33 - b } else { nr33 };
+    let qb33 = if c33 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q33  = <(#{q32[0+:63], qb33[0+:1]})::xlen_t>;
+    let nr34 = <(#{r33[0+:63], q33[63+:1]})::xlen_t>;
+    let c34  = if r33[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr34, b) };
+    let r34  = if c34 == 1'b1 { nr34 - b } else { nr34 };
+    let qb34 = if c34 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q34  = <(#{q33[0+:63], qb34[0+:1]})::xlen_t>;
+    let nr35 = <(#{r34[0+:63], q34[63+:1]})::xlen_t>;
+    let c35  = if r34[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr35, b) };
+    let r35  = if c35 == 1'b1 { nr35 - b } else { nr35 };
+    let qb35 = if c35 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q35  = <(#{q34[0+:63], qb35[0+:1]})::xlen_t>;
+    let nr36 = <(#{r35[0+:63], q35[63+:1]})::xlen_t>;
+    let c36  = if r35[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr36, b) };
+    let r36  = if c36 == 1'b1 { nr36 - b } else { nr36 };
+    let qb36 = if c36 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q36  = <(#{q35[0+:63], qb36[0+:1]})::xlen_t>;
+    let nr37 = <(#{r36[0+:63], q36[63+:1]})::xlen_t>;
+    let c37  = if r36[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr37, b) };
+    let r37  = if c37 == 1'b1 { nr37 - b } else { nr37 };
+    let qb37 = if c37 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q37  = <(#{q36[0+:63], qb37[0+:1]})::xlen_t>;
+    let nr38 = <(#{r37[0+:63], q37[63+:1]})::xlen_t>;
+    let c38  = if r37[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr38, b) };
+    let r38  = if c38 == 1'b1 { nr38 - b } else { nr38 };
+    let qb38 = if c38 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q38  = <(#{q37[0+:63], qb38[0+:1]})::xlen_t>;
+    let nr39 = <(#{r38[0+:63], q38[63+:1]})::xlen_t>;
+    let c39  = if r38[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr39, b) };
+    let r39  = if c39 == 1'b1 { nr39 - b } else { nr39 };
+    let qb39 = if c39 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q39  = <(#{q38[0+:63], qb39[0+:1]})::xlen_t>;
+    let nr40 = <(#{r39[0+:63], q39[63+:1]})::xlen_t>;
+    let c40  = if r39[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr40, b) };
+    let r40  = if c40 == 1'b1 { nr40 - b } else { nr40 };
+    let qb40 = if c40 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q40  = <(#{q39[0+:63], qb40[0+:1]})::xlen_t>;
+    let nr41 = <(#{r40[0+:63], q40[63+:1]})::xlen_t>;
+    let c41  = if r40[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr41, b) };
+    let r41  = if c41 == 1'b1 { nr41 - b } else { nr41 };
+    let qb41 = if c41 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q41  = <(#{q40[0+:63], qb41[0+:1]})::xlen_t>;
+    let nr42 = <(#{r41[0+:63], q41[63+:1]})::xlen_t>;
+    let c42  = if r41[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr42, b) };
+    let r42  = if c42 == 1'b1 { nr42 - b } else { nr42 };
+    let qb42 = if c42 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q42  = <(#{q41[0+:63], qb42[0+:1]})::xlen_t>;
+    let nr43 = <(#{r42[0+:63], q42[63+:1]})::xlen_t>;
+    let c43  = if r42[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr43, b) };
+    let r43  = if c43 == 1'b1 { nr43 - b } else { nr43 };
+    let qb43 = if c43 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q43  = <(#{q42[0+:63], qb43[0+:1]})::xlen_t>;
+    let nr44 = <(#{r43[0+:63], q43[63+:1]})::xlen_t>;
+    let c44  = if r43[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr44, b) };
+    let r44  = if c44 == 1'b1 { nr44 - b } else { nr44 };
+    let qb44 = if c44 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q44  = <(#{q43[0+:63], qb44[0+:1]})::xlen_t>;
+    let nr45 = <(#{r44[0+:63], q44[63+:1]})::xlen_t>;
+    let c45  = if r44[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr45, b) };
+    let r45  = if c45 == 1'b1 { nr45 - b } else { nr45 };
+    let qb45 = if c45 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q45  = <(#{q44[0+:63], qb45[0+:1]})::xlen_t>;
+    let nr46 = <(#{r45[0+:63], q45[63+:1]})::xlen_t>;
+    let c46  = if r45[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr46, b) };
+    let r46  = if c46 == 1'b1 { nr46 - b } else { nr46 };
+    let qb46 = if c46 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q46  = <(#{q45[0+:63], qb46[0+:1]})::xlen_t>;
+    let nr47 = <(#{r46[0+:63], q46[63+:1]})::xlen_t>;
+    let c47  = if r46[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr47, b) };
+    let r47  = if c47 == 1'b1 { nr47 - b } else { nr47 };
+    let qb47 = if c47 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q47  = <(#{q46[0+:63], qb47[0+:1]})::xlen_t>;
+    let nr48 = <(#{r47[0+:63], q47[63+:1]})::xlen_t>;
+    let c48  = if r47[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr48, b) };
+    let r48  = if c48 == 1'b1 { nr48 - b } else { nr48 };
+    let qb48 = if c48 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q48  = <(#{q47[0+:63], qb48[0+:1]})::xlen_t>;
+    let nr49 = <(#{r48[0+:63], q48[63+:1]})::xlen_t>;
+    let c49  = if r48[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr49, b) };
+    let r49  = if c49 == 1'b1 { nr49 - b } else { nr49 };
+    let qb49 = if c49 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q49  = <(#{q48[0+:63], qb49[0+:1]})::xlen_t>;
+    let nr50 = <(#{r49[0+:63], q49[63+:1]})::xlen_t>;
+    let c50  = if r49[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr50, b) };
+    let r50  = if c50 == 1'b1 { nr50 - b } else { nr50 };
+    let qb50 = if c50 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q50  = <(#{q49[0+:63], qb50[0+:1]})::xlen_t>;
+    let nr51 = <(#{r50[0+:63], q50[63+:1]})::xlen_t>;
+    let c51  = if r50[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr51, b) };
+    let r51  = if c51 == 1'b1 { nr51 - b } else { nr51 };
+    let qb51 = if c51 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q51  = <(#{q50[0+:63], qb51[0+:1]})::xlen_t>;
+    let nr52 = <(#{r51[0+:63], q51[63+:1]})::xlen_t>;
+    let c52  = if r51[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr52, b) };
+    let r52  = if c52 == 1'b1 { nr52 - b } else { nr52 };
+    let qb52 = if c52 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q52  = <(#{q51[0+:63], qb52[0+:1]})::xlen_t>;
+    let nr53 = <(#{r52[0+:63], q52[63+:1]})::xlen_t>;
+    let c53  = if r52[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr53, b) };
+    let r53  = if c53 == 1'b1 { nr53 - b } else { nr53 };
+    let qb53 = if c53 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q53  = <(#{q52[0+:63], qb53[0+:1]})::xlen_t>;
+    let nr54 = <(#{r53[0+:63], q53[63+:1]})::xlen_t>;
+    let c54  = if r53[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr54, b) };
+    let r54  = if c54 == 1'b1 { nr54 - b } else { nr54 };
+    let qb54 = if c54 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q54  = <(#{q53[0+:63], qb54[0+:1]})::xlen_t>;
+    let nr55 = <(#{r54[0+:63], q54[63+:1]})::xlen_t>;
+    let c55  = if r54[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr55, b) };
+    let r55  = if c55 == 1'b1 { nr55 - b } else { nr55 };
+    let qb55 = if c55 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q55  = <(#{q54[0+:63], qb55[0+:1]})::xlen_t>;
+    let nr56 = <(#{r55[0+:63], q55[63+:1]})::xlen_t>;
+    let c56  = if r55[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr56, b) };
+    let r56  = if c56 == 1'b1 { nr56 - b } else { nr56 };
+    let qb56 = if c56 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q56  = <(#{q55[0+:63], qb56[0+:1]})::xlen_t>;
+    let nr57 = <(#{r56[0+:63], q56[63+:1]})::xlen_t>;
+    let c57  = if r56[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr57, b) };
+    let r57  = if c57 == 1'b1 { nr57 - b } else { nr57 };
+    let qb57 = if c57 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q57  = <(#{q56[0+:63], qb57[0+:1]})::xlen_t>;
+    let nr58 = <(#{r57[0+:63], q57[63+:1]})::xlen_t>;
+    let c58  = if r57[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr58, b) };
+    let r58  = if c58 == 1'b1 { nr58 - b } else { nr58 };
+    let qb58 = if c58 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q58  = <(#{q57[0+:63], qb58[0+:1]})::xlen_t>;
+    let nr59 = <(#{r58[0+:63], q58[63+:1]})::xlen_t>;
+    let c59  = if r58[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr59, b) };
+    let r59  = if c59 == 1'b1 { nr59 - b } else { nr59 };
+    let qb59 = if c59 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q59  = <(#{q58[0+:63], qb59[0+:1]})::xlen_t>;
+    let nr60 = <(#{r59[0+:63], q59[63+:1]})::xlen_t>;
+    let c60  = if r59[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr60, b) };
+    let r60  = if c60 == 1'b1 { nr60 - b } else { nr60 };
+    let qb60 = if c60 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q60  = <(#{q59[0+:63], qb60[0+:1]})::xlen_t>;
+    let nr61 = <(#{r60[0+:63], q60[63+:1]})::xlen_t>;
+    let c61  = if r60[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr61, b) };
+    let r61  = if c61 == 1'b1 { nr61 - b } else { nr61 };
+    let qb61 = if c61 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q61  = <(#{q60[0+:63], qb61[0+:1]})::xlen_t>;
+    let nr62 = <(#{r61[0+:63], q61[63+:1]})::xlen_t>;
+    let c62  = if r61[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr62, b) };
+    let r62  = if c62 == 1'b1 { nr62 - b } else { nr62 };
+    let qb62 = if c62 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q62  = <(#{q61[0+:63], qb62[0+:1]})::xlen_t>;
+    let nr63 = <(#{r62[0+:63], q62[63+:1]})::xlen_t>;
+    let c63  = if r62[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr63, b) };
+    let r63  = if c63 == 1'b1 { nr63 - b } else { nr63 };
+    let qb63 = if c63 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q63  = <(#{q62[0+:63], qb63[0+:1]})::xlen_t>;
+    let nr64 = <(#{r63[0+:63], q63[63+:1]})::xlen_t>;
+    let c64  = if r63[63] == 1'b1 { 1'b1 } else { call unsigned_ge(nr64, b) };
+    let r64  = if c64 == 1'b1 { nr64 - b } else { nr64 };
+    let qb64 = if c64 == 1'b1 { <(64'd1)::xlen_t> } else { <(64'd0)::xlen_t> };
+    let q64  = <(#{q63[0+:63], qb64[0+:1]})::xlen_t>;
+    mul_parts_t::{ lo = q64; hi = r64 }
+}
+
+// Unified div/rem: prepares operands, calls divu64_full exactly once,
+// then selects quotient or remainder with sign correction.
+// All 8 RISC-V div/rem variants (DIV/DIVU/REM/REMU and .w forms) go through here.
+func do_div_remu(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
+    // Effective 64-bit operands: .w variants need sign/zero extension
+    let eff_a =
+        if op == alu_op_t::ALU_DIVW || op == alu_op_t::ALU_REMW {
+            call sext32_result(lhs[0+:32])
+        } else if op == alu_op_t::ALU_DIVUW || op == alu_op_t::ALU_REMUW {
+            <(#{32'd0, lhs[0+:32]})::xlen_t>
+        } else { lhs };
+    let eff_b =
+        if op == alu_op_t::ALU_DIVW || op == alu_op_t::ALU_REMW {
+            call sext32_result(rhs[0+:32])
+        } else if op == alu_op_t::ALU_DIVUW || op == alu_op_t::ALU_REMUW {
+            <(#{32'd0, rhs[0+:32]})::xlen_t>
+        } else { rhs };
+    // Signed variants: DIV/REM/DIVW/REMW
+    let is_signed =
+        op == alu_op_t::ALU_DIV  || op == alu_op_t::ALU_REM ||
+        op == alu_op_t::ALU_DIVW || op == alu_op_t::ALU_REMW;
+    // Take unsigned magnitude for signed ops
+    let abs_a = if is_signed == 1'b1 && eff_a[63] == 1'b1 { <(64'd0)::xlen_t> - eff_a } else { eff_a };
+    let abs_b = if is_signed == 1'b1 && eff_b[63] == 1'b1 { <(64'd0)::xlen_t> - eff_b } else { eff_b };
+    // Division by zero: per RISC-V spec, quotient=all-ones, remainder=dividend
+    let dbz = eff_b == <(64'd0)::xlen_t>;
+    // Single call to divu64_full — the only elaboration of the 64-step divider
+    let parts =
+        if dbz == 1'b1 { mul_parts_t::{ lo = <(64'hffffffffffffffff)::xlen_t>; hi = eff_a } }
+        else           { call divu64_full(abs_a, abs_b) };
+    let quot = parts.lo;
+    let rem  = parts.hi;
+    // Select quotient or remainder based on op
+    let is_rem =
+        op == alu_op_t::ALU_REM  || op == alu_op_t::ALU_REMU ||
+        op == alu_op_t::ALU_REMW || op == alu_op_t::ALU_REMUW;
+    let raw = if is_rem == 1'b1 { rem } else { quot };
+    // Sign correction for signed non-div-by-zero results
+    let neg_div = is_signed == 1'b1 && eff_a[63] != eff_b[63];
+    let neg_rem = is_signed == 1'b1 && eff_a[63] == 1'b1;
+    let need_neg = if is_rem == 1'b1 { neg_rem } else { neg_div };
+    let apply_neg = need_neg == 1'b1 && dbz == 1'b0;
+    let signed_result = if apply_neg == 1'b1 { <(64'd0)::xlen_t> - raw } else { raw };
+    // .w variants: truncate to 32 bits and sign-extend
+    let is_w =
+        op == alu_op_t::ALU_DIVW  || op == alu_op_t::ALU_DIVUW ||
+        op == alu_op_t::ALU_REMW  || op == alu_op_t::ALU_REMUW;
+    if is_w == 1'b1 { call sext32_result(signed_result[0+:32]) } else { signed_result }
+}
+
+func alu_exec(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
+    // `result` is the architectural value; `zero` and `negative` are useful
+    // side channels for later refinements and branch/control experiments.
+    let result =
+        if op == alu_op_t::ALU_ADD { lhs + rhs }
+        else if op == alu_op_t::ALU_SUB { lhs - rhs }
+        else if op == alu_op_t::ALU_AND { lhs & rhs }
+        else if op == alu_op_t::ALU_OR { lhs | rhs }
+        else if op == alu_op_t::ALU_XOR { lhs ^ rhs }
+        else if op == alu_op_t::ALU_SLL { call logical_shl(lhs, rhs) }
+        else if op == alu_op_t::ALU_SRL { call logical_shr(lhs, rhs) }
+        else if op == alu_op_t::ALU_SRA { call arithmetic_shr(lhs, rhs) }
+        else if op == alu_op_t::ALU_SLT { <(#{63'd0, call signed_lt(lhs, rhs)})::xlen_t> }
+        else if op == alu_op_t::ALU_SLTU { <(#{63'd0, call unsigned_lt(lhs, rhs)})::xlen_t> }
+        else if op == alu_op_t::ALU_COPY_A { lhs }
+        else if op == alu_op_t::ALU_COPY_B { rhs }
+        else if op == alu_op_t::ALU_MUL { call mul_low(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULH { call mulh(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULHSU { call mulhsu(lhs, rhs) }
+        else if op == alu_op_t::ALU_MULHU { call mulhu(lhs, rhs) }
+        else if op == alu_op_t::ALU_ADDW { call sext32_result(<(lhs[0+:32] + rhs[0+:32])::logic[32]>) }
+        else if op == alu_op_t::ALU_SUBW { call sext32_result(<(lhs[0+:32] - rhs[0+:32])::logic[32]>) }
+        else if op == alu_op_t::ALU_SLLW {
+            let res = call logical_shl_32(lhs, rhs);
+            call sext32_result(res[0+:32])
+        }
+        else if op == alu_op_t::ALU_SRLW {
+            let res = call logical_shr_32(lhs, rhs);
+            call sext32_result(res[0+:32])
+        }
+        else if op == alu_op_t::ALU_SRAW {
+            let sex32 = call sext32_result(lhs[0+:32]);
+            call arithmetic_shr_32(sex32, rhs)
+        }
+        else if op == alu_op_t::ALU_MULW   { call mulw(lhs, rhs) }
+        else if op == alu_op_t::ALU_DIV   ||
+                op == alu_op_t::ALU_DIVU  ||
+                op == alu_op_t::ALU_REM   ||
+                op == alu_op_t::ALU_REMU  ||
+                op == alu_op_t::ALU_DIVW  ||
+                op == alu_op_t::ALU_DIVUW ||
+                op == alu_op_t::ALU_REMW  ||
+                op == alu_op_t::ALU_REMUW { call do_div_remu(op, lhs, rhs) }
+        else { rhs };
+    alu_result_t::{result = result; zero = (result == <(64'd0)::xlen_t>); negative = result[63]}
+}
