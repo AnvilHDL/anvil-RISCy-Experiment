@@ -1462,6 +1462,20 @@ static void commit_ccsr_wb(Vtop___024root* rootp) {
     }
 }
 
+// Squash the three younger pipeline stages (EX/MEM, ID/EX, IF/ID) and
+// redirect the fetch PC.  Called after CJALR, CALL, or RETURN retires so
+// that the speculative instructions behind them are discarded.
+static void cap_flush_and_redirect(Vtop___024root* rootp, uint64_t target_pc) {
+    rootp->pipeline_core__DOT__ex_mem_q_q[23u] &= ~(1u << 8u);  // ex_mem valid
+    rootp->pipeline_core__DOT__id_ex_q_q[0x22u] &= ~1u;          // id_ex valid
+    rootp->pipeline_core__DOT__if_id_q_q[0xdu]  &= ~(1u << 27u); // if_id valid
+    rootp->pipeline_core__DOT__pc_q_q = target_pc;
+    std::fprintf(stderr,
+        "[CAP-REDIRECT cyc=%llu] pc → 0x%llx\n",
+        (unsigned long long)read_mcycle(rootp),
+        (unsigned long long)target_pc);
+}
+
 // Retire a cap instruction at WB: compute result and update cap_rf[rd], or
 // patch alu_result for SCC/CBNZ so the integer RF gets a cap-derived value.
 // MREV/REVOKE/DROP/DELIN are missing cap_write in ctrl.anvil so we detect
@@ -1537,6 +1551,32 @@ static void commit_cap_wb(Vtop___024root* rootp) {
                 "[CAP-REVOKE cyc=%llu] epoch=%llu swept=%d\n",
                 (unsigned long long)read_mcycle(rootp),
                 (unsigned long long)epoch, n);
+            return;
+        }
+
+        // CJALR/CALL/RETURN: cap transformation + PC redirect.
+        // Jump target = cursor stored in rs1 BEFORE the operation;
+        // the result cap (written to rd) carries the new cursor / type.
+        if (cap_op == C_OP_CJALR || cap_op == C_OP_CALL || cap_op == C_OP_RETURN) {
+            const uint64_t jump_target = cap_rf[rs1].cursor;
+            const uint64_t scalar_arg  = read_gpr(rootp, rs2);
+            const CapabilityT result   = cpp_cap_alu_exec(
+                cap_op, cap_rf[rs1], cap_rf[rs2], scalar_arg);
+            if (rd != 0u) cap_rf[rd] = result;
+            // Only redirect the PC when the source cap has the correct type:
+            // CALL needs SEALED, RETURN needs SEALED_RET; CJALR is unrestricted.
+            const bool do_redirect =
+                (cap_op == C_OP_CJALR) ||
+                (cap_op == C_OP_CALL   && cap_rf[rs1].ctype == CTYPE_SEALED) ||
+                (cap_op == C_OP_RETURN && cap_rf[rs1].ctype == CTYPE_SEALED_RET);
+            if (do_redirect) {
+                std::fprintf(stderr,
+                    "[CAP-JUMP cyc=%llu] op=%u rs1=%u rd=%u target=0x%llx ret_cursor=0x%llx\n",
+                    (unsigned long long)read_mcycle(rootp), cap_op, rs1, rd,
+                    (unsigned long long)jump_target,
+                    (unsigned long long)result.cursor);
+                cap_flush_and_redirect(rootp, jump_target);
+            }
             return;
         }
 
