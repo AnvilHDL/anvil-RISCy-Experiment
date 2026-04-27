@@ -1,0 +1,168 @@
+import "../../types/pipeline.anvilh"
+
+// Small constructors used everywhere to keep stage code compact.
+// These make the pipeline logic read in terms of "real" work and "bubble"
+// movement instead of re-spelling large zero-valued packet literals.
+
+func no_exc() {
+    exc_info_t::{has_exc = 1'b0; cause = 6'd0; tval = <(64'd0)::xlen_t>}
+}
+
+func zero_cap() {
+    capability_t::{
+        valid = 1'b0;
+        ctype = cap_type_t::CAP_LINEAR;
+        world = world_t::WORLD_NORMAL;
+        rev_epoch = <(64'd0)::xlen_t>;
+        cursor = <(64'd0)::xlen_t>;
+        base = <(64'd0)::xlen_t>;
+        end_ = <(64'd0)::xlen_t>;
+        perms = cap_perm_t::CAP_PERM_NONE;
+        async = cap_async_t::CAP_ASYNC_SYNC;
+        reg_id = <(5'd0)::reg_idx_t>
+    }
+}
+
+func nop_ctrl() {
+    // Canonical control bundle for a bubble / NOP.
+    ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b0; cap_write = 1'b0; wb_sel = wb_sel_t::WB_NONE; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}
+}
+
+func fetch_misaligned_exc(pc : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd0; tval = pc}
+}
+
+func illegal_exc(instr : instr_t) {
+    // M1 reports illegal instructions with cause=2 and the offending word in mtval.
+    exc_info_t::{has_exc = 1'b1; cause = 6'd2; tval = <(instr)::xlen_t>}
+}
+
+func breakpoint_exc(pc : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd3; tval = pc}
+}
+
+func load_misaligned_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd4; tval = addr}
+}
+
+func load_access_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd5; tval = addr}
+}
+
+func store_misaligned_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd6; tval = addr}
+}
+
+func store_access_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd7; tval = addr}
+}
+
+func fetch_page_fault_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd12; tval = addr}
+}
+
+func load_page_fault_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd13; tval = addr}
+}
+
+func store_page_fault_exc(addr : xlen_t) {
+    exc_info_t::{has_exc = 1'b1; cause = 6'd15; tval = addr}
+}
+
+func ecall_exc(cur_priv : priv_lvl_t) {
+    if cur_priv == priv_lvl_t::PRIV_LVL_U {
+        exc_info_t::{has_exc = 1'b1; cause = 6'd8; tval = <(64'd0)::xlen_t>}
+    } else if cur_priv == priv_lvl_t::PRIV_LVL_S {
+        exc_info_t::{has_exc = 1'b1; cause = 6'd9; tval = <(64'd0)::xlen_t>}
+    } else {
+        exc_info_t::{has_exc = 1'b1; cause = 6'd11; tval = <(64'd0)::xlen_t>}
+    }
+}
+
+func bubble_if_id() {
+    if_id_pkt_t::{
+        valid = 1'b0;
+        fetched = fetch_pkt_t::{pc = <(64'd0)::xlen_t>; instr = <(32'd0)::instr_t>};
+        predicted_taken = 1'b0;
+        predicted_target = <(64'd0)::xlen_t>;
+        cap_target_reg = <(5'd0)::reg_idx_t>;
+        cap_result = call zero_cap();
+        exc = call no_exc()
+    }
+}
+
+func bubble_id_ex() {
+    id_ex_pkt_t::{
+        valid = 1'b0;
+        pc = <(64'd0)::xlen_t>;
+        instr = <(32'd0)::instr_t>;
+        rs1 = <(5'd0)::reg_idx_t>;
+        rs2 = <(5'd0)::reg_idx_t>;
+        rd = <(5'd0)::reg_idx_t>;
+        rs1_val = <(64'd0)::xlen_t>;
+        rs2_val = <(64'd0)::xlen_t>;
+        cap_rs1_val = call zero_cap();
+        cap_rs2_val = call zero_cap();
+        imm = <(64'd0)::xlen_t>;
+        predicted_taken = 1'b0;
+        predicted_target = <(64'd0)::xlen_t>;
+        cap_target_reg = <(5'd0)::reg_idx_t>;
+        cap_result = call zero_cap();
+        ctrl = call nop_ctrl();
+        exc = call no_exc()
+    }
+}
+
+func bubble_ex_mem() {
+    ex_mem_pkt_t::{
+        valid = 1'b0;
+        pc = <(64'd0)::xlen_t>;
+        instr = <(32'd0)::instr_t>;
+        rd = <(5'd0)::reg_idx_t>;
+        alu_result = <(64'd0)::xlen_t>;
+        store_data = <(64'd0)::xlen_t>;
+        branch_taken = 1'b0;
+        branch_tgt = <(64'd0)::xlen_t>;
+        cap_target_reg = <(5'd0)::reg_idx_t>;
+        cap_result = call zero_cap();
+        csr_addr = <(12'd0)::csr_idx_t>;
+        csr_new_val = <(64'd0)::xlen_t>;
+        csr_we = 1'b0;
+        ctrl = call nop_ctrl();
+        exc = call no_exc()
+    }
+}
+
+func bubble_mem_wb() {
+    mem_wb_pkt_t::{
+        valid = 1'b0;
+        pc = <(64'd0)::xlen_t>;
+        instr = <(32'd0)::instr_t>;
+        rd = <(5'd0)::reg_idx_t>;
+        alu_result = <(64'd0)::xlen_t>;
+        mem_data = <(64'd0)::xlen_t>;
+        cap_target_reg = <(5'd0)::reg_idx_t>;
+        cap_result = call zero_cap();
+        csr_addr = <(12'd0)::csr_idx_t>;
+        csr_new_val = <(64'd0)::xlen_t>;
+        csr_we = 1'b0;
+        ctrl = call nop_ctrl();
+        exc = call no_exc()
+    }
+}
+
+func copy_if_id_pkt(pkt : if_id_pkt_t) {
+    pkt
+}
+
+func copy_id_ex_pkt(pkt : id_ex_pkt_t) {
+    pkt
+}
+
+func copy_ex_mem_pkt(pkt : ex_mem_pkt_t) {
+    pkt
+}
+
+func copy_mem_wb_pkt(pkt : mem_wb_pkt_t) {
+    pkt
+}

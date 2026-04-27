@@ -1,0 +1,854 @@
+import "../../types/pipeline.anvilh"
+import "../fetch/imem.anvil"
+import "../decode/fields.anvil"
+import "../decode/immgen.anvil"
+import "../decode/ctrl.anvil"
+import "../execute/alu.anvil"
+import "../execute/branch.anvil"
+import "../hazard/forward.anvil"
+import "../hazard/hazard.anvil"
+import "../memory/mem_stage.anvil"
+import "../writeback/wb.anvil"
+import "../csr/csr_state.anvil"
+import "./packet_utils.anvil"
+
+// ============================================================
+// pipeline_core — top-level 5-stage in-order RV64 processor
+//
+// Stages (all in one Anvil proc, one clock tick per iteration):
+//
+//   IF  → fetch the instruction word from imem_rdata_q (pre-filled by harness)
+//   ID  → decode opcode to ctrl_sig_t; read two register operands
+//   EX  → run integer ALU / branch evaluator / CSR read
+//   MEM → commit loads and stores; handle AMOs
+//   WB  → write rd; apply CSR state transitions; redirect PC on traps
+//
+// Key design decisions:
+//
+//  · S-mode CSRs (stvec, sepc, …) are separate regs, not part of
+//    rv64i_csr_state_t.  Keeping the struct at 10 fields prevents the Anvil
+//    OCaml elaborator from hitting exponential expression-tree growth.
+//
+//  · Sv39 page-table walk runs entirely in the C++ harness (sim_main.cpp).
+//    The harness writes translated physical addresses into sv39_*_pa_q before
+//    each clock edge; the RTL just reads those registers.  This avoids the
+//    14 GB peak RSS that an in-RTL PTW FSM would require at elaboration time.
+//
+//  · Interrupts are checked at the START of every cycle (before any
+//    instruction retires).  If int_fire is set, the pipeline is flushed and
+//    the interrupt is taken before the oldest in-flight instruction can commit.
+//    This means the "interrupted" instruction WILL be re-executed after MRET.
+//
+//  · CSR state is updated inline with scalar `>>` wire bindings rather than
+//    calling struct-building functions.  Chaining large struct constructors
+//    through function calls causes the same elaborator blowup as large structs.
+// ============================================================
+
+func is_mmio_addr(addr : xlen_t) {
+    // CLINT: 0x02000000-0x02FFFFFF  (addr[24+:40] == 2)
+    // PLIC:  0x0C000000-0x0FFFFFFF  (addr[26+:38] == 3)
+    // UART:  0x10000000-0x1FFFFFFF  (addr[28+:36] == 1)
+    addr[24+:40] == 40'd2 ||
+    addr[26+:38] == 38'd3 ||
+    addr[28+:36] == 36'd1
+}
+
+func mem_addr_in_range(addr : xlen_t) {
+    // 8 MB RAM window: 0x80000000 – 0x807FFFFF.
+    // addr[23+:41] == 256 covers 0x80000000-0x807FFFFF.
+    addr[23+:41] == 41'd256 || call is_mmio_addr(addr) == 1'b1
+}
+
+func mem_align_ok(addr : xlen_t, funct3 : logic[3]) {
+    if funct3 == 3'b000 || funct3 == 3'b100 { 1'b1 }
+    else if funct3 == 3'b001 || funct3 == 3'b101 { addr[0] == 1'b0 }
+    else if funct3 == 3'b010 || funct3 == 3'b110 { addr[0+:2] == 2'b00 }
+    else { addr[0+:3] == 3'b000 }
+}
+
+func lane_shift_amt(byte_offset : logic[3]) {
+    <(#{58'd0, byte_offset, 3'd0})::xlen_t>
+}
+
+func select_load_lane(mem_word : xlen_t, byte_offset : logic[3]) {
+    call shr_dyn(mem_word, call lane_shift_amt(byte_offset))
+}
+
+func apply_store_mask(old_word : xlen_t, new_data : xlen_t, funct3 : logic[3], byte_offset : logic[3]) {
+    let shift = call lane_shift_amt(byte_offset);
+    let width_mask =
+        if funct3 == 3'b000 { <(64'h00000000000000ff)::xlen_t> }
+        else if funct3 == 3'b001 { <(64'h000000000000ffff)::xlen_t> }
+        else if funct3 == 3'b010 { <(64'h00000000ffffffff)::xlen_t> }
+        else { <(64'hffffffffffffffff)::xlen_t> };
+    let shifted_mask = call shl_dyn(width_mask, shift);
+    let shifted_data = call shl_dyn(new_data & width_mask, shift);
+    (old_word & ~shifted_mask) | shifted_data
+}
+
+func finalize_load_data(mem_word : xlen_t, funct3 : logic[3], byte_offset : logic[3]) {
+    let lane = call select_load_lane(mem_word, byte_offset);
+    if funct3 == 3'b000 { call sext8(lane[0+:8]) }
+    else if funct3 == 3'b001 { call sext16(lane[0+:16]) }
+    else if funct3 == 3'b010 { call sext32(lane[0+:32]) }
+    else if funct3 == 3'b011 { lane }
+    else if funct3 == 3'b100 { <(#{56'd0, lane[0+:8]})::xlen_t> }
+    else if funct3 == 3'b101 { <(#{48'd0, lane[0+:16]})::xlen_t> }
+    else { <(#{32'd0, lane[0+:32]})::xlen_t> }
+}
+
+func core_wb_fire(pkt : mem_wb_pkt_t) {
+    pkt.valid == 1'b1 &&
+    pkt.exc.has_exc == 1'b0 &&
+    pkt.ctrl.reg_write == 1'b1 &&
+    pkt.rd != <(5'd0)::reg_idx_t>
+}
+
+func core_trap_now(pkt : mem_wb_pkt_t) {
+    pkt.valid == 1'b1 && pkt.exc.has_exc == 1'b1
+}
+
+func core_branch_redirect_now(pkt : id_ex_pkt_t) {
+    pkt.valid == 1'b1 &&
+    pkt.exc.has_exc == 1'b0 &&
+    pkt.ctrl.branch_op != branch_op_t::BR_NONE
+}
+
+func core_jump_redirect_now(pkt : id_ex_pkt_t) {
+    pkt.valid == 1'b1 &&
+    pkt.exc.has_exc == 1'b0 &&
+    (pkt.ctrl.branch_op == branch_op_t::BR_JAL ||
+     pkt.ctrl.branch_op == branch_op_t::BR_JALR ||
+     pkt.ctrl.branch_op == branch_op_t::BR_CJALR)
+}
+
+func core_return_redirect_now(pkt : id_ex_pkt_t) {
+    pkt.valid == 1'b1 &&
+    pkt.exc.has_exc == 1'b0 &&
+    pkt.ctrl.is_system == 1'b1 &&
+    (call is_mret_instr(pkt.instr) == 1'b1 || call is_sret_instr(pkt.instr) == 1'b1)
+}
+
+// ── Helper functions (combinatorial, no state) ───────────────────────────────
+
+proc pipeline_core() {
+    // ── Register file ─────────────────────────────────────────────────────────
+    reg booted_q : logic;
+    reg trace_enable_q : logic;
+    reg sim_exit_valid_q : logic;
+    reg sim_exit_code_q : xlen_t;
+
+    reg pc_q : xlen_t;
+    reg redirect_hold_q : logic;
+    reg ext_mip_q : xlen_t;
+    // S-mode CSRs and priv stored as separate regs to keep rv64i_csr_state_t
+    // at 10 fields, preventing exponential expression-tree blowup in the Anvil
+    // OCaml compiler when 21-field struct literals are chained via functions.
+    reg priv_q      : priv_lvl_t;
+    reg mie_q       : xlen_t;
+    reg mip_q       : xlen_t;
+    reg medeleg_q   : xlen_t;
+    reg mideleg_q   : xlen_t;
+    reg stvec_q     : xlen_t;
+    reg sscratch_q  : xlen_t;
+    reg sepc_q      : xlen_t;
+    reg scause_q    : xlen_t;
+    reg stval_q     : xlen_t;
+    reg satp_q      : xlen_t;
+    reg stimecmp_q  : xlen_t;
+    // Sv39 harness interface.
+    // The C++ harness manages TLB state and PTW entirely.  Each cycle it writes
+    // these registers before the clock edge so the Anvil proc can use them.
+    // This keeps all wide comparators and PTW state machines out of the
+    // Anvil elaborator, avoiding the ~14 GB peak RSS that OOM-kills the build.
+    reg sv39_stall_q      : logic;   // 1 = pipeline stalled (PTW in progress)
+    reg sv39_if_valid_q   : logic;   // 1 = IF physical address ready (TLB hit)
+    reg sv39_if_pa_q      : xlen_t;  // translated physical fetch address
+    reg sv39_if_pf_q      : logic;   // 1 = IF page fault (no-execute)
+    reg sv39_mem_valid_q  : logic;   // 1 = MEM physical address ready
+    reg sv39_mem_pa_q     : xlen_t;  // translated physical MEM address
+    reg sv39_mem_pf_q     : logic;   // 1 = MEM page fault
+    reg sv39_mem_pf_store_q : logic; // 1 = MEM page fault was a store
+    // Flush request: Anvil sets this at WB when SFENCE.VMA or satp-write retires.
+    // Harness reads it and invalidates its C++ TLB.
+    reg sv39_flush_q      : logic;
+    reg regs_q : xlen_t[32];
+    // Memory side-channels: large arrays moved to C++ host_mem[] to stay within Anvil budget.
+    reg mem_rdata_q       : xlen_t;   // harness pre-populates with load data before each tick
+    reg imem_rdata_q      : instr_t;  // harness pre-populates with fetch word before each tick
+    reg mem_store_valid_q : logic;    // 1 = store committed this cycle
+    reg mem_store_addr_q  : xlen_t;   // physical byte address of store
+    reg mem_store_word_q  : xlen_t;   // full masked 64-bit word to write
+    reg ex_alu_result_q   : xlen_t;   // mirrors next_ex_mem.alu_result for harness mem pre-populate
+    reg csr_q : rv64i_csr_state_t;
+    reg if_id_q : if_id_pkt_t;
+    reg id_ex_q : id_ex_pkt_t;
+    reg ex_mem_q : ex_mem_pkt_t;
+    reg mem_wb_q : mem_wb_pkt_t;
+
+    loop {
+        // ── Reset / boot  (runs only on cycle 0) ─────────────────────────────
+        if *booted_q == 1'b0 {
+            {
+                set pc_q := <(64'h80000000)::xlen_t>;
+                set redirect_hold_q := 1'b0;
+                set ext_mip_q := <(64'd0)::xlen_t>;
+                set priv_q      := priv_lvl_t::PRIV_LVL_M;
+                set mie_q       := <(64'd0)::xlen_t>;
+                set mip_q       := <(64'd0)::xlen_t>;
+                set medeleg_q   := <(64'd0)::xlen_t>;
+                set mideleg_q   := <(64'd0)::xlen_t>;
+                set stvec_q     := <(64'd0)::xlen_t>;
+                set sscratch_q  := <(64'd0)::xlen_t>;
+                set sepc_q      := <(64'd0)::xlen_t>;
+                set scause_q    := <(64'd0)::xlen_t>;
+                set stval_q     := <(64'd0)::xlen_t>;
+                set satp_q      := <(64'd0)::xlen_t>;
+                set stimecmp_q  := <(64'd0)::xlen_t>;
+                set sv39_stall_q := 1'b0;
+                set sv39_if_valid_q := 1'b0;
+                set sv39_if_pa_q := <(64'd0)::xlen_t>;
+                set sv39_if_pf_q := 1'b0;
+                set sv39_mem_valid_q := 1'b0;
+                set sv39_mem_pa_q := <(64'd0)::xlen_t>;
+                set sv39_mem_pf_q := 1'b0;
+                set sv39_mem_pf_store_q := 1'b0;
+                set sv39_flush_q := 1'b0;
+                set mem_rdata_q := <(64'd0)::xlen_t>;
+                set imem_rdata_q := <(32'd0)::instr_t>;
+                set mem_store_valid_q := 1'b0;
+                set mem_store_addr_q := <(64'd0)::xlen_t>;
+                set mem_store_word_q := <(64'd0)::xlen_t>;
+                set ex_alu_result_q := <(64'd0)::xlen_t>;
+                set trace_enable_q := 1'b0;
+                set sim_exit_valid_q := 1'b0;
+                set sim_exit_code_q := <(64'd0)::xlen_t>;
+                set csr_q := call csr_boot_state(<(64'd0)::xlen_t>);
+                set if_id_q := call bubble_if_id();
+                set id_ex_q := call bubble_id_ex();
+                set ex_mem_q := call bubble_ex_mem();
+                set mem_wb_q := call bubble_mem_wb();
+                set booted_q := 1'b1;
+                cycle 1
+            }
+        } else {
+            // ── Steady-state pipeline tick ────────────────────────────────────
+            // Each iteration of the loop body represents one clock cycle.
+            // Registers are read at the top (via *reg_q), wires are computed
+            // sequentially with >>, and new register values are committed in
+            // the final {} block before `cycle 1`.
+
+            // Sv39: harness writes sv39_* registers before each clock edge.
+            // pipeline_stall is just a scalar register read — no wide mux.
+            let pipeline_stall = *sv39_stall_q == 1'b1 >>
+            let cur_pc = *pc_q >>
+            let cur_redirect_hold = *redirect_hold_q >>
+            let cur_if_id = *if_id_q >>
+            let cur_id_ex = *id_ex_q >>
+            let cur_ex_mem = *ex_mem_q >>
+            let cur_mem_wb = *mem_wb_q >>
+            let cur_csr = *csr_q >>
+            // S-mode CSRs and priv (separate regs).
+            let cur_priv     = *priv_q >>
+            let cur_mie      = *mie_q >>
+            let cur_mip      = *mip_q >>
+            let cur_medeleg  = *medeleg_q >>
+            let cur_mideleg  = *mideleg_q >>
+            let cur_stvec    = *stvec_q >>
+            let cur_sscratch = *sscratch_q >>
+            let cur_sepc     = *sepc_q >>
+            let cur_scause   = *scause_q >>
+            let cur_stval    = *stval_q >>
+            let cur_satp     = *satp_q >>
+            let cur_stimecmp = *stimecmp_q >>
+            let retire_trap_now = call core_trap_now(cur_mem_wb) >>
+            // Asynchronous interrupt check.  ext_mip_q is written each cycle by the
+            // simulation harness (CLINT/PLIC logic).  Interrupts fire when:
+            //   (mip | ext_mip) & mie != 0 AND (priv < M OR mstatus.MIE == 1)
+            // A pending synchronous trap (retire_trap_now) takes priority.
+            let eff_mip = cur_mip | *ext_mip_q >>
+            let int_pending = eff_mip & cur_mie >>
+            let mstatus_mie_bit = cur_csr.mstatus[3] >>
+            let priv_is_m = cur_priv == priv_lvl_t::PRIV_LVL_M >>
+            let int_fire =
+                retire_trap_now == 1'b0 &&
+                int_pending != <(64'd0)::xlen_t> &&
+                (priv_is_m == 1'b0 || mstatus_mie_bit == 1'b1) >>
+            // Priority encoder: MTI(7) > MSI(3) > MEI(11); cause has bit 63 set.
+            let int_cause_val =
+                if int_pending[7] == 1'b1 { <(64'h8000000000000007)::xlen_t> }
+                else if int_pending[3] == 1'b1 { <(64'h8000000000000003)::xlen_t> }
+                else if int_pending[5] == 1'b1 { <(64'h8000000000000005)::xlen_t> }
+                else if int_pending[1] == 1'b1 { <(64'h8000000000000001)::xlen_t> }
+                else { <(64'h800000000000000b)::xlen_t> } >>
+            let int_pc = if cur_mem_wb.valid == 1'b1 { cur_mem_wb.pc } else { cur_pc } >>
+
+            // ── WB: register writeback ────────────────────────────────────────
+            // wb_fire: true when MEM/WB packet can commit rd to the register file.
+            // Suppressed during interrupts (we re-execute the interrupted insn after MRET).
+            let wb_fire = call core_wb_fire(cur_mem_wb) && int_fire == 1'b0 && pipeline_stall == 1'b0 >>
+            let wb_data = call wb_value(cur_mem_wb) >>
+
+            if wb_fire == 1'b1 {
+                set regs_q[cur_mem_wb.rd] := wb_data
+            } else {
+                ()
+            };
+
+            // ── MEM: load / store / AMO ───────────────────────────────────────
+            // Physical address: harness-translated when Sv39 is active, otherwise
+            // the raw ALU result (identity mapping in M-mode / phys-mode).
+            let eff_mem_addr = if *sv39_mem_valid_q == 1'b1 { *sv39_mem_pa_q } else { cur_ex_mem.alu_result } >>
+            // mem_rdata_q pre-populated by harness from host_mem[] or MMIO device data.
+            let mem_rdata   = *mem_rdata_q >>
+            let aligned_ok = call mem_align_ok(eff_mem_addr, cur_ex_mem.ctrl.mem_width) >>
+            let in_range = call mem_addr_in_range(eff_mem_addr) >>
+            // AMO: mem_read && mem_write.  funct5 identifies the specific operation.
+            let is_amo  = cur_ex_mem.ctrl.mem_read == 1'b1 && cur_ex_mem.ctrl.mem_write == 1'b1 >>
+            let amo_funct5 = cur_ex_mem.instr[27+:5] >>
+            let is_sc   = amo_funct5 == 5'b00011 >>
+            let mem_exc =
+                if cur_ex_mem.exc.has_exc == 1'b1 { cur_ex_mem.exc }
+                else if *sv39_mem_pf_q == 1'b1 && *sv39_mem_pf_store_q == 1'b1 {
+                    call store_page_fault_exc(cur_ex_mem.alu_result)
+                } else if *sv39_mem_pf_q == 1'b1 {
+                    call load_page_fault_exc(cur_ex_mem.alu_result)
+                } else if cur_ex_mem.valid == 1'b1 && cur_ex_mem.ctrl.mem_read == 1'b1 && in_range == 1'b0 {
+                    call load_access_exc(cur_ex_mem.alu_result)
+                } else if cur_ex_mem.valid == 1'b1 && cur_ex_mem.ctrl.mem_write == 1'b1 && in_range == 1'b0 {
+                    call store_access_exc(cur_ex_mem.alu_result)
+                } else if cur_ex_mem.valid == 1'b1 && cur_ex_mem.ctrl.mem_read == 1'b1 && aligned_ok == 1'b0 {
+                    call load_misaligned_exc(eff_mem_addr)
+                } else if cur_ex_mem.valid == 1'b1 && cur_ex_mem.ctrl.mem_write == 1'b1 && aligned_ok == 1'b0 {
+                    call store_misaligned_exc(eff_mem_addr)
+                } else {
+                    call no_exc()
+                } >>
+            let mem_active =
+                pipeline_stall == 1'b0 &&
+                retire_trap_now == 1'b0 &&
+                int_fire == 1'b0 &&
+                cur_ex_mem.valid == 1'b1 &&
+                mem_exc.has_exc == 1'b0 >>
+            let any_store_now =
+                mem_active == 1'b1 &&
+                cur_ex_mem.ctrl.mem_write == 1'b1 >>
+            // rs2 forwarding for store/AMO.
+            let store_src_idx = cur_ex_mem.instr[20+:5] >>
+            let store_live_data =
+                if store_src_idx == 5'd0 { <(64'd0)::xlen_t> }
+                else if wb_fire == 1'b1 && cur_mem_wb.rd == <(store_src_idx)::reg_idx_t> { wb_data }
+                else { call copy(*regs_q[store_src_idx]) } >>
+            // AMO: compute new value from old (mem_rdata) and operand (rs2).
+            let amo_new_val =
+                if amo_funct5 == 5'b00001 { store_live_data }
+                else if amo_funct5 == 5'b00000 { mem_rdata + store_live_data }
+                else if amo_funct5 == 5'b00100 { mem_rdata ^ store_live_data }
+                else if amo_funct5 == 5'b01100 { mem_rdata & store_live_data }
+                else if amo_funct5 == 5'b01000 { mem_rdata | store_live_data }
+                else { store_live_data } >>
+            let store_src = if is_amo == 1'b1 { amo_new_val } else { store_live_data } >>
+            // store_masked: full 64-bit word with sub-word masking applied.
+            let store_masked =
+                call apply_store_mask(mem_rdata, store_src,
+                                      cur_ex_mem.ctrl.mem_width, eff_mem_addr[0+:3]) >>
+            // For load_data: AMO returns old value (mem_rdata); SC returns 0 (always-succeed).
+            let amo_rd_val = if is_sc == 1'b1 { <(64'd0)::xlen_t> } else { mem_rdata } >>
+            let raw_load_word = if is_amo == 1'b1 { amo_rd_val } else { mem_rdata } >>
+            let load_data =
+                if mem_active == 1'b1 && cur_ex_mem.ctrl.mem_read == 1'b1 {
+                    call finalize_load_data(raw_load_word, cur_ex_mem.ctrl.mem_width, eff_mem_addr[0+:3])
+                } else {
+                    <(64'd0)::xlen_t>
+                } >>
+            let mem_pkt =
+                ex_mem_pkt_t::{
+                    valid = cur_ex_mem.valid;
+                    pc = cur_ex_mem.pc;
+                    instr = cur_ex_mem.instr;
+                    rd = cur_ex_mem.rd;
+                    alu_result = cur_ex_mem.alu_result;
+                    store_data = cur_ex_mem.store_data;
+                    branch_taken = cur_ex_mem.branch_taken;
+                    branch_tgt = cur_ex_mem.branch_tgt;
+                    cap_target_reg = cur_ex_mem.cap_target_reg;
+                    cap_result = cur_ex_mem.cap_result;
+                    csr_addr = cur_ex_mem.csr_addr;
+                    csr_new_val = cur_ex_mem.csr_new_val;
+                    csr_we = cur_ex_mem.csr_we;
+                    ctrl = cur_ex_mem.ctrl;
+                    exc = mem_exc
+                } >>
+            let next_mem_wb =
+                if pipeline_stall == 1'b1 {
+                    cur_mem_wb
+                } else if retire_trap_now == 1'b1 || int_fire == 1'b1 {
+                    call bubble_mem_wb()
+                } else {
+                    call memory_stage(mem_pkt, load_data)
+                } >>
+            // When an interrupt fires, prevent the WB packet from retiring so the
+            // interrupted instruction is re-executed after MRET.
+            // Interrupt delegation: check mideleg before computing next CSR and redirect.
+            let int_code    = int_cause_val[0+:6] >>
+            let mideleg_bit = call shr_dyn(cur_mideleg, <(#{58'd0, int_code})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let int_to_s    = mideleg_bit == <(64'd1)::xlen_t> && priv_is_m == 1'b0 >>
+            let csr_wb_input = if pipeline_stall { call bubble_mem_wb() } else if int_fire { call bubble_mem_wb() } else { cur_mem_wb } >>
+            // CSR state update: all fields computed inline as scalar wires.
+            // No struct-building functions are chained — each >> binding is a wire,
+            // preventing exponential expression-tree growth in the Anvil compiler.
+            let csr_we_now   = csr_wb_input.csr_we == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 >>
+            let csr_addr_w   = csr_wb_input.csr_addr >>
+            let csr_val_w    = csr_wb_input.csr_new_val >>
+            let trap_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b1 >>
+            let exc_cause_wb = csr_wb_input.exc.cause >>
+            let medeleg_exc_bit = call shr_dyn(cur_medeleg, <(#{58'd0, exc_cause_wb})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let trap_del_s   = trap_wb == 1'b1 && cur_priv != priv_lvl_t::PRIV_LVL_M && medeleg_exc_bit == <(64'd1)::xlen_t> >>
+            let mret_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 && csr_wb_input.ctrl.is_system == 1'b1 && call is_mret_instr(csr_wb_input.instr) == 1'b1 >>
+            let sret_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 && csr_wb_input.ctrl.is_system == 1'b1 && call is_sret_instr(csr_wb_input.instr) == 1'b1 >>
+            let retire_wb    = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 >>
+            // mstatus: updated by traps, returns, and CSR writes.
+            let next_mstatus =
+                if pipeline_stall { cur_csr.mstatus }
+                else if int_fire == 1'b1 && int_to_s == 1'b1 { call trap_s_mstatus(cur_csr.mstatus, cur_priv) }
+                else if int_fire == 1'b1 { call trap_m_mstatus(cur_csr.mstatus, cur_priv) }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { call trap_s_mstatus(cur_csr.mstatus, cur_priv) }
+                else if trap_wb == 1'b1 { call trap_m_mstatus(cur_csr.mstatus, cur_priv) }
+                else if mret_wb == 1'b1 { call mret_new_mstatus(cur_csr.mstatus) }
+                else if sret_wb == 1'b1 { call sret_new_mstatus(cur_csr.mstatus) }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_mstatus_idx() { csr_val_w }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_sstatus_idx() {
+                    (cur_csr.mstatus & ~call sstatus_mask()) | (csr_val_w & call sstatus_mask())
+                } else { cur_csr.mstatus } >>
+            // mtvec
+            let next_mtvec =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_mtvec_idx() { csr_val_w }
+                else { cur_csr.mtvec } >>
+            // mscratch
+            let next_mscratch =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_mscratch_idx() { csr_val_w }
+                else { cur_csr.mscratch } >>
+            // mepc: set by M-mode trap/interrupt; also writable via csrw.
+            let next_mepc =
+                if pipeline_stall { cur_csr.mepc }
+                else if int_fire == 1'b1 && int_to_s == 1'b0 { int_pc }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b0 { csr_wb_input.pc }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_mepc_idx() { csr_val_w & <(64'hfffffffffffffffe)::xlen_t> }
+                else { cur_csr.mepc } >>
+            // mcause
+            let next_mcause =
+                if pipeline_stall { cur_csr.mcause }
+                else if int_fire == 1'b1 && int_to_s == 1'b0 { int_cause_val }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b0 { <(#{58'd0, exc_cause_wb})::xlen_t> }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_mcause_idx() { csr_val_w }
+                else { cur_csr.mcause } >>
+            // mtval
+            let next_mtval =
+                if pipeline_stall { cur_csr.mtval }
+                else if int_fire == 1'b1 && int_to_s == 1'b0 { <(64'd0)::xlen_t> }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b0 { csr_wb_input.exc.tval }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_mtval_idx() { csr_val_w }
+                else { cur_csr.mtval } >>
+            // mcycle: always increments (writable via csrw)
+            let next_mcycle =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_mcycle_idx() { csr_val_w }
+                else { cur_csr.mcycle + <(64'd1)::xlen_t> } >>
+            // minstret: increments on retire
+            let next_minstret =
+                if pipeline_stall { cur_csr.minstret }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_minstret_idx() { csr_val_w }
+                else if retire_wb == 1'b1 { cur_csr.minstret + <(64'd1)::xlen_t> }
+                else { cur_csr.minstret } >>
+            // priv: updated by traps, interrupts, and returns.
+            let next_priv =
+                if pipeline_stall { cur_priv }
+                else if int_fire == 1'b1 && int_to_s == 1'b1 { priv_lvl_t::PRIV_LVL_S }
+                else if int_fire == 1'b1 { priv_lvl_t::PRIV_LVL_M }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { priv_lvl_t::PRIV_LVL_S }
+                else if trap_wb == 1'b1 { priv_lvl_t::PRIV_LVL_M }
+                else if mret_wb == 1'b1 { call mstatus_mpp(cur_csr.mstatus) }
+                else if sret_wb == 1'b1 { call mstatus_spp(cur_csr.mstatus) }
+                else { cur_priv } >>
+            // mie (sie is an alias)
+            let next_mie =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && (csr_addr_w == call csr_mie_idx() || csr_addr_w == call csr_sie_idx()) { csr_val_w }
+                else { cur_mie } >>
+            // mip (sip is an alias)
+            let next_mip =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && (csr_addr_w == call csr_mip_idx() || csr_addr_w == call csr_sip_idx()) { csr_val_w }
+                else { cur_mip } >>
+            // medeleg
+            let next_medeleg =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_medeleg_idx() { csr_val_w }
+                else { cur_medeleg } >>
+            // mideleg
+            let next_mideleg =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_mideleg_idx() { csr_val_w }
+                else { cur_mideleg } >>
+            // stvec
+            let next_stvec =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_stvec_idx() { csr_val_w }
+                else { cur_stvec } >>
+            // sscratch
+            let next_sscratch =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_sscratch_idx() { csr_val_w }
+                else { cur_sscratch } >>
+            // sepc: set by S-mode trap or interrupt delegation; writable via csrw.
+            let next_sepc =
+                if pipeline_stall { cur_sepc }
+                else if int_fire == 1'b1 && int_to_s == 1'b1 { int_pc }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { csr_wb_input.pc }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_sepc_idx() { csr_val_w & <(64'hfffffffffffffffe)::xlen_t> }
+                else { cur_sepc } >>
+            // scause
+            let next_scause =
+                if pipeline_stall { cur_scause }
+                else if int_fire == 1'b1 && int_to_s == 1'b1 { int_cause_val }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { <(#{58'd0, exc_cause_wb})::xlen_t> }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_scause_idx() { csr_val_w }
+                else { cur_scause } >>
+            // stval
+            let next_stval =
+                if pipeline_stall { cur_stval }
+                else if int_fire == 1'b1 && int_to_s == 1'b1 { <(64'd0)::xlen_t> }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { csr_wb_input.exc.tval }
+                else if csr_we_now == 1'b1 && csr_addr_w == call csr_stval_idx() { csr_val_w }
+                else { cur_stval } >>
+            // satp
+            let next_satp =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_satp_idx() { csr_val_w }
+                else { cur_satp } >>
+            // stimecmp (Sstc extension: supervisor timer compare register)
+            let next_stimecmp =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_stimecmp_idx() { csr_val_w }
+                else { cur_stimecmp } >>
+
+            // ── EX: ALU / branch / CSR ────────────────────────────────────────
+            // Forwarded operands cover the EX→ID and MEM→ID bypass paths.
+            let fwd_rs1 = call forward_value(cur_id_ex.rs1, cur_id_ex.rs1_val, cur_ex_mem, cur_mem_wb) >>
+            let fwd_rs2 = call forward_value(cur_id_ex.rs2, cur_id_ex.rs2_val, cur_ex_mem, cur_mem_wb) >>
+            let alu_a =
+                if cur_id_ex.ctrl.src_a_pc == 1'b1 { cur_id_ex.pc }
+                else { fwd_rs1 } >>
+            let alu_b =
+                if cur_id_ex.ctrl.use_imm == 1'b1 { cur_id_ex.imm }
+                else { fwd_rs2 } >>
+            let alu_res = call alu_exec(cur_id_ex.ctrl.alu_op, alu_a, alu_b) >>
+            let ex_br_res = call branch_eval(cur_id_ex.ctrl.branch_op, cur_id_ex.pc, fwd_rs1, fwd_rs2, cur_id_ex.imm) >>
+            let sys_exc =
+                if cur_id_ex.ctrl.is_system == 1'b1 && cur_id_ex.exc.has_exc == 1'b0 {
+                    call system_instr_exc(cur_priv, cur_id_ex.instr)
+                } else {
+                    call no_exc()
+                } >>
+            let ex_final_exc =
+                if cur_id_ex.exc.has_exc == 1'b1 { cur_id_ex.exc }
+                else { sys_exc } >>
+            let ex_csr_addr = <(cur_id_ex.instr[20+:12])::csr_idx_t> >>
+            let ex_csr_rdata =
+                if cur_id_ex.ctrl.is_system == 1'b1 &&
+                   call is_csr_instr(cur_id_ex.instr) == 1'b1 &&
+                   ex_final_exc.has_exc == 1'b0 {
+                    // Forward CSR value from EX/MEM or MEM/WB if a preceding
+                    // instruction wrote the same CSR and hasn't committed yet.
+                    if cur_ex_mem.valid == 1'b1 && cur_ex_mem.csr_we == 1'b1 && cur_ex_mem.csr_addr == ex_csr_addr {
+                        cur_ex_mem.csr_new_val
+                    } else if cur_mem_wb.valid == 1'b1 && cur_mem_wb.csr_we == 1'b1 && cur_mem_wb.csr_addr == ex_csr_addr {
+                        cur_mem_wb.csr_new_val
+                    } else if ex_csr_addr == call csr_sstatus_idx() { cur_csr.mstatus & call sstatus_mask() }
+                    else if ex_csr_addr == call csr_sie_idx() { cur_mie }
+                    else if ex_csr_addr == call csr_stvec_idx() { cur_stvec }
+                    else if ex_csr_addr == call csr_sscratch_idx() { cur_sscratch }
+                    else if ex_csr_addr == call csr_sepc_idx() { cur_sepc }
+                    else if ex_csr_addr == call csr_scause_idx() { cur_scause }
+                    else if ex_csr_addr == call csr_stval_idx() { cur_stval }
+                    else if ex_csr_addr == call csr_sip_idx() { cur_mip | *ext_mip_q }
+                    else if ex_csr_addr == call csr_satp_idx() { cur_satp }
+                    else if ex_csr_addr == call csr_medeleg_idx() { cur_medeleg }
+                    else if ex_csr_addr == call csr_mideleg_idx() { cur_mideleg }
+                    else if ex_csr_addr == call csr_mie_idx() { cur_mie }
+                    else if ex_csr_addr == call csr_mip_idx() { cur_mip | *ext_mip_q }
+                    else if ex_csr_addr == call csr_mstatus_idx() { cur_csr.mstatus }
+                    else if ex_csr_addr == call csr_mtvec_idx() { cur_csr.mtvec }
+                    else if ex_csr_addr == call csr_mscratch_idx() { cur_csr.mscratch }
+                    else if ex_csr_addr == call csr_mepc_idx() { cur_csr.mepc }
+                    else if ex_csr_addr == call csr_mcause_idx() { cur_csr.mcause }
+                    else if ex_csr_addr == call csr_mtval_idx() { cur_csr.mtval }
+                    else if ex_csr_addr == call csr_mcycle_idx() { cur_csr.mcycle }
+                    else if ex_csr_addr == call csr_minstret_idx() { cur_csr.minstret }
+                    else if ex_csr_addr == call csr_mhartid_idx() { cur_csr.mhartid }
+                    else if ex_csr_addr == call csr_mcounteren_idx() { <(64'hffffffff)::xlen_t> }
+                    else if ex_csr_addr == call csr_time_idx() { cur_csr.mcycle }
+                    else if ex_csr_addr == call csr_stimecmp_idx() { cur_stimecmp }
+                    else if ex_csr_addr == call csr_menvcfg_idx() { <(64'd0)::xlen_t> }
+                    else { <(64'd0)::xlen_t> }
+                } else {
+                    <(64'd0)::xlen_t>
+                } >>
+            let ex_csr_we =
+                if cur_id_ex.ctrl.is_system == 1'b1 &&
+                   call is_csr_instr(cur_id_ex.instr) == 1'b1 &&
+                   call csr_instr_writes(cur_id_ex.instr) == 1'b1 &&
+                   ex_final_exc.has_exc == 1'b0 {
+                    1'b1
+                } else {
+                    1'b0
+                } >>
+            let ex_csr_new_val =
+                if ex_csr_we == 1'b1 {
+                    call csr_instr_new_value(cur_id_ex.instr, ex_csr_rdata, fwd_rs1)
+                } else {
+                    <(64'd0)::xlen_t>
+                } >>
+            let ex_final_alu =
+                if cur_id_ex.ctrl.is_system == 1'b1 &&
+                   call is_csr_instr(cur_id_ex.instr) == 1'b1 {
+                    ex_csr_rdata
+                } else {
+                    alu_res.result
+                } >>
+            let next_ex_mem =
+                if pipeline_stall == 1'b1 {
+                    cur_ex_mem
+                } else if cur_id_ex.valid == 1'b0 || retire_trap_now == 1'b1 || int_fire == 1'b1 {
+                    call bubble_ex_mem()
+                } else {
+                    ex_mem_pkt_t::{
+                        valid = cur_id_ex.valid;
+                        pc = cur_id_ex.pc;
+                        instr = cur_id_ex.instr;
+                        rd = cur_id_ex.rd;
+                        alu_result = ex_final_alu;
+                        store_data = fwd_rs2;
+                        branch_taken = if ex_final_exc.has_exc == 1'b1 { 1'b0 } else { ex_br_res.taken };
+                        branch_tgt = ex_br_res.target;
+                        cap_target_reg = cur_id_ex.cap_target_reg;
+                        cap_result = call zero_cap();
+                        csr_addr = ex_csr_addr;
+                        csr_new_val = ex_csr_new_val;
+                        csr_we = ex_csr_we;
+                        ctrl = cur_id_ex.ctrl;
+                        exc = ex_final_exc
+                    }
+                } >>
+
+            let base_a0 = call copy(*regs_q[10]) >>
+            let base_a7 = call copy(*regs_q[17]) >>
+            let live_a0 = call forward_value(<(5'd10)::reg_idx_t>, base_a0, cur_ex_mem, cur_mem_wb) >>
+            let live_a7 = call forward_value(<(5'd17)::reg_idx_t>, base_a7, cur_ex_mem, cur_mem_wb) >>
+            let next_sim_exit_valid =
+                if *sim_exit_valid_q == 1'b0 &&
+                   cur_id_ex.valid == 1'b1 &&
+                   cur_id_ex.ctrl.is_system == 1'b1 &&
+                   call is_ecall_instr(cur_id_ex.instr) == 1'b1 &&
+                   live_a7 == <(64'd93)::xlen_t> {
+                    1'b1
+                } else {
+                    call copy(*sim_exit_valid_q)
+                } >>
+            let next_sim_exit_code =
+                if *sim_exit_valid_q == 1'b0 &&
+                   cur_id_ex.valid == 1'b1 &&
+                   cur_id_ex.ctrl.is_system == 1'b1 &&
+                   call is_ecall_instr(cur_id_ex.instr) == 1'b1 &&
+                   live_a7 == <(64'd93)::xlen_t> {
+                    live_a0
+                } else {
+                    call copy(*sim_exit_code_q)
+                } >>
+
+            // ── ID: decode + register read ────────────────────────────────────
+            let stall_now =
+                call load_use_stall(cur_if_id, cur_id_ex) == 1'b1 ||
+                call control_use_stall(cur_if_id, cur_id_ex, cur_ex_mem) == 1'b1 >>
+            let dec_rs1 = cur_if_id.fetched.instr[15+:5] >>
+            let dec_rs2 = cur_if_id.fetched.instr[20+:5] >>
+            let dec_ctrl = call decode_ctrl(cur_if_id.fetched.instr) >>
+            let dec_exc =
+                if cur_if_id.exc.has_exc == 1'b1 { cur_if_id.exc }
+                else if dec_ctrl.illegal == 1'b1 { call illegal_exc(cur_if_id.fetched.instr) }
+                else { call no_exc() } >>
+            let dec_rs1_raw =
+                if dec_rs1 == 5'd0 { <(64'd0)::xlen_t> }
+                else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs1)::reg_idx_t> { wb_data }
+                else { call copy(*regs_q[dec_rs1]) } >>
+            let dec_rs2_raw =
+                if dec_rs2 == 5'd0 { <(64'd0)::xlen_t> }
+                else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs2)::reg_idx_t> { wb_data }
+                else { call copy(*regs_q[dec_rs2]) } >>
+            let decoded_pkt =
+                id_ex_pkt_t::{
+                    valid = cur_if_id.valid;
+                    pc = cur_if_id.fetched.pc;
+                    instr = cur_if_id.fetched.instr;
+                    rs1 = <(dec_rs1)::reg_idx_t>;
+                    rs2 = <(dec_rs2)::reg_idx_t>;
+                    rd = call rd_of(cur_if_id.fetched.instr);
+                    rs1_val = dec_rs1_raw;
+                    rs2_val = dec_rs2_raw;
+                    cap_rs1_val = call zero_cap();
+                    cap_rs2_val = call zero_cap();
+                    imm = call decode_imm(cur_if_id.fetched.instr);
+                    predicted_taken = cur_if_id.predicted_taken;
+                    predicted_target = cur_if_id.predicted_target;
+                    cap_target_reg = cur_if_id.cap_target_reg;
+                    cap_result = cur_if_id.cap_result;
+                    ctrl = dec_ctrl.ctrl;
+                    exc = dec_exc
+                } >>
+            let trap_redirect_now = retire_trap_now == 1'b1 || int_fire == 1'b1 >>
+            let jump_redirect_now = call core_jump_redirect_now(cur_id_ex) >>
+            let branch_redirect_now =
+                if jump_redirect_now == 1'b1 { 1'b1 }
+                else {
+                    cur_id_ex.valid == 1'b1 &&
+                    cur_id_ex.exc.has_exc == 1'b0 &&
+                    ex_br_res.taken == 1'b1
+                } >>
+            let return_redirect_now = call core_return_redirect_now(cur_id_ex) >>
+            let if_branch_pending =
+                cur_if_id.valid == 1'b1 &&
+                dec_ctrl.ctrl.branch_op != branch_op_t::BR_NONE >>
+            let ex_branch_pending =
+                cur_id_ex.valid == 1'b1 &&
+                cur_id_ex.exc.has_exc == 1'b0 &&
+                cur_id_ex.ctrl.branch_op != branch_op_t::BR_NONE >>
+            let frontend_branch_stall =
+                trap_redirect_now == 1'b0 &&
+                branch_redirect_now == 1'b0 &&
+                return_redirect_now == 1'b0 &&
+                (if_branch_pending == 1'b1 || ex_branch_pending == 1'b1) >>
+            let next_id_ex =
+                if pipeline_stall == 1'b1 {
+                    cur_id_ex
+                } else if stall_now == 1'b1 || trap_redirect_now == 1'b1 || branch_redirect_now == 1'b1 || return_redirect_now == 1'b1 {
+                    call bubble_id_ex()
+                } else {
+                    decoded_pkt
+                } >>
+            // Forward mepc/sepc for mret/sret: a preceding csrw may have written
+            // the EPC before it has committed to cur_csr.
+            let return_epc_addr =
+                if call is_sret_instr(cur_id_ex.instr) == 1'b1 { call csr_sepc_idx() } else { call csr_mepc_idx() } >>
+            let return_base_epc =
+                if call is_sret_instr(cur_id_ex.instr) == 1'b1 { cur_sepc } else { cur_csr.mepc } >>
+            let return_fwd_epc =
+                if cur_ex_mem.valid == 1'b1 && cur_ex_mem.csr_we == 1'b1 && cur_ex_mem.csr_addr == return_epc_addr {
+                    cur_ex_mem.csr_new_val
+                } else if cur_mem_wb.valid == 1'b1 && cur_mem_wb.csr_we == 1'b1 && cur_mem_wb.csr_addr == return_epc_addr {
+                    cur_mem_wb.csr_new_val
+                } else {
+                    return_base_epc
+                } >>
+            // Trap target: check medeleg to decide M vs S trap vector.
+            let trap_exc_cause = cur_mem_wb.exc.cause >>
+            let trap_medeleg_bit = call shr_dyn(cur_medeleg, <(#{58'd0, trap_exc_cause})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let trap_goes_s = cur_priv != priv_lvl_t::PRIV_LVL_M && trap_medeleg_bit == <(64'd1)::xlen_t> >>
+            let redirect_target =
+                if int_fire == 1'b1 && int_to_s == 1'b1 {
+                    cur_stvec
+                } else if int_fire == 1'b1 {
+                    cur_csr.mtvec
+                } else if retire_trap_now == 1'b1 && trap_goes_s == 1'b1 {
+                    cur_stvec
+                } else if retire_trap_now == 1'b1 {
+                    cur_csr.mtvec
+                } else if return_redirect_now == 1'b1 {
+                    return_fwd_epc
+                } else if ex_br_res.taken == 1'b1 {
+                    ex_br_res.target
+                } else {
+                    cur_pc + <(64'd4)::xlen_t>
+                } >>
+            // ── IF: instruction fetch ─────────────────────────────────────────
+            // imem_rdata_q is pre-populated by the harness from host_mem[] (or the
+            // software TLB path) before this clock edge.  The RTL just reads it.
+            let fetch_instr = *imem_rdata_q >>
+            // Fetch exception: page fault (harness-provided) > misalignment.
+            let fetch_exc =
+                if cur_pc[0+:2] != 2'b00 { call fetch_misaligned_exc(cur_pc) }
+                else if *sv39_if_pf_q == 1'b1 { call fetch_page_fault_exc(cur_pc) }
+                else { call no_exc() } >>
+            let next_if_id =
+                if pipeline_stall == 1'b1 {
+                    cur_if_id
+                } else if trap_redirect_now == 1'b1 || branch_redirect_now == 1'b1 || return_redirect_now == 1'b1 {
+                    call bubble_if_id()
+                } else if stall_now == 1'b1 {
+                    cur_if_id
+                } else if frontend_branch_stall == 1'b1 {
+                    call bubble_if_id()
+                } else {
+                    if_id_pkt_t::{
+                        valid = 1'b1;
+                        fetched = fetch_pkt_t::{pc = cur_pc; instr = fetch_instr};
+                        predicted_taken = 1'b0;
+                        predicted_target = cur_pc + <(64'd4)::xlen_t>;
+                        cap_target_reg = <(5'd0)::reg_idx_t>;
+                        cap_result = call zero_cap();
+                        exc = fetch_exc
+                    }
+                } >>
+            let next_pc =
+                if pipeline_stall == 1'b1 {
+                    cur_pc
+                } else if trap_redirect_now == 1'b1 || branch_redirect_now == 1'b1 || return_redirect_now == 1'b1 {
+                    redirect_target
+                } else if frontend_branch_stall == 1'b1 {
+                    cur_pc
+                } else if stall_now == 1'b1 {
+                    cur_pc
+                } else {
+                    cur_pc + <(64'd4)::xlen_t>
+                } >>
+            // Signal the harness to flush its TLB when SFENCE.VMA or satp-write retires.
+            let flush_tlb =
+                pipeline_stall == 1'b0 &&
+                cur_mem_wb.valid == 1'b1 &&
+                cur_mem_wb.ctrl.is_system == 1'b1 &&
+                (call is_sfence_vma_instr(cur_mem_wb.instr) == 1'b1 ||
+                 (cur_mem_wb.csr_we == 1'b1 && cur_mem_wb.csr_addr == call csr_satp_idx())) >>
+            let next_redirect_hold = 1'b0 >>
+            {
+                set sim_exit_valid_q := next_sim_exit_valid;
+                set sim_exit_code_q := next_sim_exit_code;
+                set csr_q := rv64i_csr_state_t::{
+                    mstatus  = next_mstatus;
+                    misa     = cur_csr.misa;
+                    mtvec    = next_mtvec;
+                    mscratch = next_mscratch;
+                    mepc     = next_mepc;
+                    mcause   = next_mcause;
+                    mtval    = next_mtval;
+                    mcycle   = next_mcycle;
+                    minstret = next_minstret;
+                    mhartid  = cur_csr.mhartid
+                };
+                set priv_q      := next_priv;
+                set mie_q       := next_mie;
+                set mip_q       := next_mip;
+                set medeleg_q   := next_medeleg;
+                set mideleg_q   := next_mideleg;
+                set stvec_q     := next_stvec;
+                set sscratch_q  := next_sscratch;
+                set sepc_q      := next_sepc;
+                set scause_q    := next_scause;
+                set stval_q     := next_stval;
+                set satp_q      := next_satp;
+                set stimecmp_q  := next_stimecmp;
+                set mem_wb_q := next_mem_wb;
+                set ex_mem_q := next_ex_mem;
+                set id_ex_q := next_id_ex;
+                set pc_q := next_pc;
+                set if_id_q := next_if_id;
+                set redirect_hold_q := next_redirect_hold;
+                set sv39_flush_q := flush_tlb;
+                set mem_store_valid_q := any_store_now;
+                set mem_store_addr_q  := if any_store_now == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
+                set mem_store_word_q  := if any_store_now == 1'b1 { store_masked } else { <(64'd0)::xlen_t> };
+                set ex_alu_result_q   := next_ex_mem.alu_result;
+                cycle 1
+            }
+        }
+    }
+}
