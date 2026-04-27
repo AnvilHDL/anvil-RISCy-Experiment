@@ -1,0 +1,277 @@
+import "./riscv.anvilh"
+import "./capstone.anvilh"
+
+// This header is the shared vocabulary for the hand-written pipeline.
+// The intent is:
+// 1. instruction decode produces `ctrl_sig_t` plus operand/immediate fields,
+// 2. each pipeline register carries one of the *_pkt_t structs,
+// 3. exception information travels with the instruction until writeback.
+
+type instr_t = logic[32];
+
+enum alu_op_t logic[5] {
+    ALU_ADD  = 5'd0,
+    ALU_SUB  = 5'd1,
+    ALU_AND  = 5'd2,
+    ALU_OR   = 5'd3,
+    ALU_XOR  = 5'd4,
+    ALU_SLL  = 5'd5,
+    ALU_SRL  = 5'd6,
+    ALU_SRA  = 5'd7,
+    ALU_SLT  = 5'd8,
+    ALU_SLTU = 5'd9,
+    ALU_COPY_A = 5'd10,
+    ALU_COPY_B = 5'd11,
+    ALU_ADDW = 5'd12,
+    ALU_SUBW = 5'd13,
+    ALU_SLLW = 5'd14,
+    ALU_SRLW = 5'd15,
+    ALU_SRAW = 5'd16,
+    ALU_MUL = 5'd17,
+    ALU_MULH = 5'd18,
+    ALU_MULHSU = 5'd19,
+    ALU_MULHU = 5'd20,
+    ALU_MULW = 5'd21,
+    ALU_DIV   = 5'd22,
+    ALU_DIVU  = 5'd23,
+    ALU_REM   = 5'd24,
+    ALU_REMU  = 5'd25,
+    ALU_DIVW  = 5'd26,
+    ALU_DIVUW = 5'd27,
+    ALU_REMW  = 5'd28,
+    ALU_REMUW = 5'd29
+}
+
+enum branch_op_t logic[4] {
+    BR_NONE = 4'd0,
+    BR_EQ   = 4'd1,
+    BR_NE   = 4'd2,
+    BR_LT   = 4'd3,
+    BR_GE   = 4'd4,
+    BR_LTU  = 4'd5,
+    BR_GEU  = 4'd6,
+    BR_JAL  = 4'd7,
+    BR_JALR = 4'd8,
+    BR_CJALR = 4'd9,
+    BR_CBNZ = 4'd10
+}
+
+enum wb_sel_t logic[2] {
+    WB_NONE = 2'd0,
+    WB_ALU  = 2'd1,
+    WB_MEM  = 2'd2,
+    WB_PC4  = 2'd3
+}
+
+struct ctrl_sig_t {
+    // `src_a_pc` + `use_imm` choose the ALU operands.
+    // The remaining fields tell later stages whether this instruction
+    // branches, accesses memory, writes a register, or is a system op.
+    src_a_pc     : logic,
+    alu_op       : alu_op_t,
+    branch_op    : branch_op_t,
+    mem_read     : logic,
+    mem_write    : logic,
+    reg_write    : logic,
+    cap_write    : logic,
+    wb_sel       : wb_sel_t,
+    use_imm      : logic,
+    is_system    : logic,
+    mem_width    : logic[3],
+    cap_op       : cap_op_t
+}
+
+struct decode_ctrl_t {
+    ctrl    : ctrl_sig_t,
+    illegal : logic
+}
+
+struct exc_info_t {
+    // M1 uses precise exceptions:
+    // detect early, carry in the packet, retire the trap in WB.
+    has_exc : logic,
+    cause   : logic[6],
+    tval    : xlen_t
+}
+
+struct fetch_pkt_t {
+    // Raw fetch result before decode splits the instruction into fields.
+    pc    : xlen_t,
+    instr : instr_t
+}
+
+struct if_id_pkt_t {
+    // IF/ID keeps the fetched instruction together with any fetch-side fault.
+    valid            : logic,
+    fetched          : fetch_pkt_t,
+    predicted_taken  : logic,
+    predicted_target : xlen_t,
+    cap_target_reg   : reg_idx_t,
+    cap_result       : capability_t,
+    exc              : exc_info_t
+}
+
+struct id_ex_pkt_t {
+    // ID/EX contains everything EX needs in one place:
+    // decoded control, register operands, immediate, and the original instr.
+    valid            : logic,
+    pc               : xlen_t,
+    instr            : instr_t,
+    rs1              : reg_idx_t,
+    rs2              : reg_idx_t,
+    rd               : reg_idx_t,
+    rs1_val          : xlen_t,
+    rs2_val          : xlen_t,
+    cap_rs1_val : capability_t,
+    cap_rs2_val : capability_t,
+    imm              : xlen_t,
+    predicted_taken  : logic,
+    predicted_target : xlen_t,
+    cap_target_reg   : reg_idx_t,
+    cap_result       : capability_t,
+    ctrl             : ctrl_sig_t,
+    exc              : exc_info_t
+}
+
+struct ex_mem_pkt_t {
+    // EX/MEM carries the ALU result, branch decision, and store payload.
+    valid        : logic,
+    pc           : xlen_t,
+    instr        : instr_t,
+    rd           : reg_idx_t,
+    alu_result   : xlen_t,
+    store_data   : xlen_t,
+    branch_taken : logic,
+    branch_tgt   : xlen_t,
+    cap_target_reg : reg_idx_t,
+    cap_result   : capability_t,
+    csr_addr     : csr_idx_t,
+    csr_new_val  : xlen_t,
+    csr_we       : logic,
+    ctrl         : ctrl_sig_t,
+    exc          : exc_info_t
+}
+
+struct mem_wb_pkt_t {
+    // MEM/WB is the last in-flight packet before architectural retirement.
+    valid      : logic,
+    pc         : xlen_t,
+    instr      : instr_t,
+    rd         : reg_idx_t,
+    alu_result : xlen_t,
+    mem_data   : xlen_t,
+    cap_target_reg : reg_idx_t,
+    cap_result : capability_t,
+    csr_addr   : csr_idx_t,
+    csr_new_val : xlen_t,
+    csr_we     : logic,
+    ctrl       : ctrl_sig_t,
+    exc        : exc_info_t
+}
+
+struct rf_write_pkt_t {
+    // Explicit writeback packet for the standalone RegisterFile module.
+    we  : logic,
+    rd  : reg_idx_t,
+    val : xlen_t
+}
+
+struct rf_read_req_t {
+    rs1 : reg_idx_t,
+    rs2 : reg_idx_t
+}
+
+struct rf_read_resp_t {
+    rs1_val : xlen_t,
+    rs2_val : xlen_t
+}
+
+struct cap_rf_write_pkt_t {
+    we  : logic,
+    rd  : reg_idx_t,
+    val : capability_t
+}
+
+struct dmem_req_t {
+    // Generic memory access packet used by helper-level experiments.
+    addr  : xlen_t,
+    wdata : xlen_t,
+    ren   : logic,
+    wen   : logic
+}
+
+struct dmem_resp_t {
+    rdata : xlen_t
+}
+
+struct dmem_read_req_t {
+    addr : xlen_t
+}
+
+struct dmem_read_resp_t {
+    rdata : xlen_t
+}
+
+struct dmem_write_req_t {
+    addr  : xlen_t,
+    wdata : xlen_t
+}
+
+struct alu_result_t {
+    // `negative` is convenient for later extensions even though M1 mostly
+    // consumes the `result` field directly.
+    result   : xlen_t,
+    zero     : logic,
+    negative : logic
+}
+
+struct branch_result_t {
+    taken  : logic,
+    target : xlen_t
+}
+
+struct csr_write_req_t {
+    // Standalone CSR service packets used by the smoke/debug modules.
+    we    : logic,
+    addr  : csr_idx_t,
+    val   : xlen_t
+}
+
+struct csr_read_req_t {
+    addr : csr_idx_t
+}
+
+struct csr_read_resp_t {
+    val : xlen_t,
+    exc : logic
+}
+
+func csr_mstatus_idx() { <(12'h300)::csr_idx_t> }
+// These helpers avoid relying on enum-cast behavior in the compiler.
+// M1 code uses them anywhere a concrete CSR address is required.
+func csr_sstatus_idx() { <(12'h100)::csr_idx_t> }
+func csr_sie_idx() { <(12'h104)::csr_idx_t> }
+func csr_stvec_idx() { <(12'h105)::csr_idx_t> }
+func csr_sscratch_idx() { <(12'h140)::csr_idx_t> }
+func csr_sepc_idx() { <(12'h141)::csr_idx_t> }
+func csr_scause_idx() { <(12'h142)::csr_idx_t> }
+func csr_stval_idx() { <(12'h143)::csr_idx_t> }
+func csr_sip_idx() { <(12'h144)::csr_idx_t> }
+func csr_satp_idx() { <(12'h180)::csr_idx_t> }
+func csr_misa_idx() { <(12'h301)::csr_idx_t> }
+func csr_medeleg_idx() { <(12'h302)::csr_idx_t> }
+func csr_mideleg_idx() { <(12'h303)::csr_idx_t> }
+func csr_mie_idx() { <(12'h304)::csr_idx_t> }
+func csr_mtvec_idx() { <(12'h305)::csr_idx_t> }
+func csr_mscratch_idx() { <(12'h340)::csr_idx_t> }
+func csr_mepc_idx() { <(12'h341)::csr_idx_t> }
+func csr_mcause_idx() { <(12'h342)::csr_idx_t> }
+func csr_mtval_idx() { <(12'h343)::csr_idx_t> }
+func csr_mip_idx() { <(12'h344)::csr_idx_t> }
+func csr_mhartid_idx() { <(12'hf14)::csr_idx_t> }
+func csr_mcycle_idx() { <(12'hb00)::csr_idx_t> }
+func csr_minstret_idx() { <(12'hb02)::csr_idx_t> }
+func csr_mcounteren_idx() { <(12'h306)::csr_idx_t> }
+func csr_time_idx()      { <(12'hc01)::csr_idx_t> }
+func csr_stimecmp_idx() { <(12'h14D)::csr_idx_t> }
+func csr_menvcfg_idx()  { <(12'h30A)::csr_idx_t> }

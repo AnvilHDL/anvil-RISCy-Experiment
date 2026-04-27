@@ -1,0 +1,80 @@
+import "./pipeline.anvilh"
+import "./capstone.anvilh"
+
+// These channels document the timing assumptions of the small standalone
+// modules used around the M1 core. The final integrated `pipeline_core`
+// mostly uses pure functions and local state, but the smoke/test modules
+// still use these service-style interfaces.
+
+chan pipe_reg_ch<T : type> {
+    // One-cycle pipeline latch:
+    // write this cycle, observe from the paired read side next cycle.
+    left write_req : (T@#1) @#1 - @#1,
+    right read_resp : (T@#1) @#write_req+1 - @#write_req+1
+}
+
+chan pulse_ch<T : type> {
+    // Fire-and-forget same-cycle pulse.
+    left pulse : (T@#1)
+}
+
+chan redirect_ch {
+    // Redirects are dynamic because only taken branches / traps emit them.
+    left target : (xlen_t@#1) @#1 - @dyn
+}
+
+chan stall_ch {
+    left stall : (logic@#1) @#1 - @#1
+}
+
+chan fetch_req_ch {
+    left pc : (xlen_t@#1) @#1 - @#1,
+    right instr : (instr_t@#1) @#pc - @#pc
+}
+
+chan data_mem_ch {
+    left addr  : (xlen_t@#1),
+    left wdata : (xlen_t@#1),
+    left ren   : (logic@#1),
+    left wen   : (logic@#1),
+    right rdata : (xlen_t@#1) @#addr+1 - @#addr+1
+}
+
+chan rf_write_ch {
+    left write_req : (rf_write_pkt_t@#1) @#1 - @#1
+}
+
+chan rf_read_ch {
+    // Register-file reads are modeled as a small staged service.
+    left read_req : (rf_read_req_t@#1) @#1 - @#1,
+    right read_resp : (rf_read_resp_t@#1) @#read_req+2 - @#read_req+2
+}
+
+chan dmem_access_ch {
+    left req : (dmem_req_t@#1) @#1 - @#1,
+    right resp : (dmem_resp_t@#1) @#req+1 - @#req+1
+}
+
+chan dmem_read_ch {
+    left read_req : (dmem_read_req_t@#1) @#1 - @#1,
+    right read_resp : (dmem_read_resp_t@#1) @#read_req+1 - @#read_req+1
+}
+
+chan dmem_write_ch {
+    left write_req : (dmem_write_req_t@#1) @#1 - @#1
+}
+
+chan csr_write_ch {
+    left write_req : (csr_write_req_t@#1) @#1 - @#1
+}
+
+chan csr_read_ch {
+    // CSR reads are also staged; the current standalone CSR service needs
+    // two cycles from request to response in the checked timing model.
+    left read_req : (csr_read_req_t@#1) @#1 - @#1,
+    right read_resp : (csr_read_resp_t@#1) @#read_req+2 - @#read_req+2
+}
+
+chan exc_fire_ch {
+    left exc : (exc_info_t@#1)
+}
