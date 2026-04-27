@@ -1402,6 +1402,64 @@ static CapabilityT cpp_cap_alu_exec(uint32_t op,
     return cap_a;
 }
 
+// Capstone custom CSRs: 0xBC0=ceh, 0xBC1=cinit, 0xBC2=epc, 0xBC3=switch_cap.
+// These are not in csr_is_supported(), so the RTL raises cause=2 for any access.
+// commit_ccsr_wb() cancels that trap pre-tick and emulates the read/write here.
+static uint64_t ccsr[4] = {0, 0, 0, 0};
+
+// Pre-tick: intercept CSRRW/CSRRS/CSRRC targeting 0xBC0–0xBC3.
+// Clears has_exc (bit 70 of mem_wb_q_q) to cancel the illegal-instruction trap,
+// recomputes new_val from the real ccsr[] state (the RTL used ex_csr_rdata=0),
+// and patches alu_result so rd gets the old CSR value.
+static void commit_ccsr_wb(Vtop___024root* rootp) {
+    const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
+    if (!((p[21u] >> 7u) & 1u)) return;    // valid (bit 679)
+    if (!((p[2u] >> 6u) & 1u)) return;     // has_exc (bit 70)
+    if (((p[2u]) & 0x3fu) != 2u) return;   // cause != 2 (illegal instruction)
+
+    const uint32_t instr = (p[18u] >> 7u) | ((p[19u] & 0x7fu) << 25u);
+    if ((instr & 0x7fu) != 0x73u) return;  // not system opcode
+    const uint32_t funct3 = (instr >> 12u) & 7u;
+    if (funct3 == 0u) return;              // ECALL/EBREAK family, not a CSR op
+
+    const uint32_t csr_addr_val = (instr >> 20u) & 0xFFFu;
+    if (csr_addr_val < 0xBC0u || csr_addr_val > 0xBC3u) return;
+
+    const uint32_t idx     = csr_addr_val - 0xBC0u;
+    const uint64_t old_val = ccsr[idx];
+    const uint32_t rs1_field = (instr >> 15u) & 0x1fu;
+    // zimm for CSRRWI/CSRRSI/CSRRCI (funct3 >= 5), otherwise rs1 value
+    const uint64_t write_src = (funct3 >= 5u)
+        ? static_cast<uint64_t>(rs1_field)
+        : read_gpr(rootp, rs1_field);
+    // CSRRW always writes; CSRRS/CSRRC only write if rs1 != 0
+    const bool writes = (funct3 == 1u || funct3 == 5u) || (rs1_field != 0u);
+
+    if (writes) {
+        uint64_t new_val;
+        if      (funct3 == 1u || funct3 == 5u) new_val = write_src;
+        else if (funct3 == 2u || funct3 == 6u) new_val = old_val | write_src;
+        else                                    new_val = old_val & ~write_src;
+        ccsr[idx] = new_val;
+        std::fprintf(stderr,
+            "[CCSR-WB cyc=%llu] instr=0x%08x %s 0x%x old=0x%llx new=0x%llx\n",
+            (unsigned long long)read_mcycle(rootp), instr,
+            (funct3==1||funct3==5) ? "CSRRW" : "CSRRS/CSRRC",
+            csr_addr_val, (unsigned long long)old_val, (unsigned long long)new_val);
+    }
+
+    // Cancel the trap and deliver the old value to rd.
+    rootp->pipeline_core__DOT__mem_wb_q_q[2u] &= ~(1u << 6u);  // clear has_exc
+    const uint32_t rd = (instr >> 7u) & 0x1fu;
+    if (rd != 0u) {
+        write_mem_wb_alu_result(rootp, old_val);
+        std::fprintf(stderr,
+            "[CCSR-RD cyc=%llu] 0xBC%x old=0x%llx → rd=x%u\n",
+            (unsigned long long)read_mcycle(rootp), idx,
+            (unsigned long long)old_val, rd);
+    }
+}
+
 // Retire a cap instruction at WB: compute result and update cap_rf[rd], or
 // patch alu_result for SCC/CBNZ so the integer RF gets a cap-derived value.
 static void commit_cap_wb(Vtop___024root* rootp) {
@@ -1799,6 +1857,7 @@ int main(int argc, char** argv) {
     }
 
     cap_rf_reset();
+    for (int i = 0; i < 4; ++i) ccsr[i] = 0;
 
     if (!elf_path.empty()) {
         if (!load_elf(top->rootp, elf_path)) {
@@ -1843,6 +1902,7 @@ int main(int argc, char** argv) {
         update_ext_mip(top->rootp);
         apply_sie_masking(top->rootp);
         commit_stores(top->rootp);
+        commit_ccsr_wb(top->rootp);
         commit_cap_wb(top->rootp);
         capture_div_from_id_ex(top->rootp);
         patch_div_results(top->rootp);
