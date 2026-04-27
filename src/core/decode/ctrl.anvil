@@ -1,0 +1,227 @@
+import "../../types/pipeline.anvilh"
+import "./fields.anvil"
+
+// Decode maps a raw instruction to a compact control bundle.
+// M1 intentionally recognizes only the subset exercised by the milestone
+// tests and marks the rest illegal so they trap cleanly.
+
+func ctrl_default() {
+    ctrl_sig_t::{
+        src_a_pc = 1'b0;
+        alu_op = alu_op_t::ALU_ADD;
+        branch_op = branch_op_t::BR_NONE;
+        mem_read = 1'b0;
+        mem_write = 1'b0;
+        reg_write = 1'b0;
+        cap_write = 1'b0;
+        wb_sel = wb_sel_t::WB_NONE;
+        use_imm = 1'b0;
+        is_system = 1'b0;
+        mem_width = 3'd0;
+        cap_op = cap_op_t::CAP_OP_NONE
+    }
+}
+
+func decode_ctrl(instr : instr_t) {
+    // The structure here follows opcode families rather than individual
+    // instructions, which keeps the control surface shallow and easy to extend.
+    let opcode = call opcode_of(instr);
+    let funct3 = call funct3_of(instr);
+    let funct7 = call funct7_of(instr);
+    let funct5 = instr[27+:5];
+    let base = call ctrl_default();
+
+    if opcode == 7'b0110111 {
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_COPY_B; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b0010111 {
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b1; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b1101111 {
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b1; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_JAL; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_PC4; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b1100111 && funct3 == 3'b000 {
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_JALR; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_PC4; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b1100011 {
+        let branch_op =
+            if funct3 == 3'b000 { branch_op_t::BR_EQ }
+            else if funct3 == 3'b001 { branch_op_t::BR_NE }
+            else if funct3 == 3'b100 { branch_op_t::BR_LT }
+            else if funct3 == 3'b101 { branch_op_t::BR_GE }
+            else if funct3 == 3'b110 { branch_op_t::BR_LTU }
+            else if funct3 == 3'b111 { branch_op_t::BR_GEU }
+            else { branch_op_t::BR_NONE };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b1; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b0; cap_write = 1'b0; wb_sel = wb_sel_t::WB_NONE; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (branch_op == branch_op_t::BR_NONE)}
+    } else if opcode == 7'b0000011 {
+        // LB/LH/LW/LD/LBU/LHU/LWU — all 7 widths are legal
+        let legal = funct3 == 3'b000 || funct3 == 3'b001 || funct3 == 3'b010 ||
+                    funct3 == 3'b011 || funct3 == 3'b100 || funct3 == 3'b101 ||
+                    funct3 == 3'b110;
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b1; mem_write = 1'b0; reg_write = legal; cap_write = 1'b0; wb_sel = wb_sel_t::WB_MEM; use_imm = 1'b1; is_system = 1'b0; mem_width = funct3; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else if opcode == 7'b0100011 {
+        let legal = funct3 == 3'b000 || funct3 == 3'b001 || funct3 == 3'b010 || funct3 == 3'b011;
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = legal; reg_write = 1'b0; cap_write = 1'b0; wb_sel = wb_sel_t::WB_NONE; use_imm = 1'b1; is_system = 1'b0; mem_width = funct3; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else if opcode == 7'b0010011 {
+        // RV64I shift immediates use a 6-bit shamt (bits[25:20]); bit[25] is
+        // part of the shamt and NOT part of the encoding discriminant.
+        // Check only bits[31:26] (the upper 6 bits of the immediate field)
+        // to distinguish SRLI (000000) from SRAI (010000).
+        let funct6 = instr[26+:6];
+        let shift_imm_legal =
+            funct3 == 3'b001 ||
+            (funct3 == 3'b101 &&
+             (funct6 == 6'b000000 || funct6 == 6'b010000));
+        let legal =
+            funct3 == 3'b000 || funct3 == 3'b010 || funct3 == 3'b011 ||
+            funct3 == 3'b100 || funct3 == 3'b110 || funct3 == 3'b111 ||
+            shift_imm_legal == 1'b1;
+        let alu_op =
+            if funct3 == 3'b000 { alu_op_t::ALU_ADD }
+            else if funct3 == 3'b010 { alu_op_t::ALU_SLT }
+            else if funct3 == 3'b011 { alu_op_t::ALU_SLTU }
+            else if funct3 == 3'b100 { alu_op_t::ALU_XOR }
+            else if funct3 == 3'b110 { alu_op_t::ALU_OR }
+            else if funct3 == 3'b111 { alu_op_t::ALU_AND }
+            else if funct3 == 3'b001 { alu_op_t::ALU_SLL }
+            else if funct3 == 3'b101 && funct6 == 6'b010000 { alu_op_t::ALU_SRA }
+            else if funct3 == 3'b101 { alu_op_t::ALU_SRL }
+            else { alu_op_t::ALU_ADD };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = legal; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else if opcode == 7'b0011011 {
+        let alu =
+            if funct3 == 3'b000 { alu_op_t::ALU_ADDW }
+            else if funct3 == 3'b001 { alu_op_t::ALU_SLLW }
+            else if funct3 == 3'b101 && funct7 == 7'b0100000 { alu_op_t::ALU_SRAW }
+            else { alu_op_t::ALU_SRLW };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b1; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b0110011 {
+        let is_mul_family = funct7 == 7'b0000001;
+        let shift_reg_legal =
+            funct3 == 3'b001 ||
+            (funct3 == 3'b101 &&
+             (funct7 == 7'b0000000 || funct7 == 7'b0100000));
+        let rv64i_legal =
+            funct3 == 3'b000 || funct3 == 3'b010 || funct3 == 3'b011 ||
+            funct3 == 3'b100 || funct3 == 3'b110 || funct3 == 3'b111 ||
+            shift_reg_legal == 1'b1;
+        let mul_legal =
+            funct3 == 3'b000 || funct3 == 3'b001 ||
+            funct3 == 3'b010 || funct3 == 3'b011 ||
+            funct3 == 3'b100 || funct3 == 3'b101 ||
+            funct3 == 3'b110 || funct3 == 3'b111;
+        let legal =
+            if is_mul_family == 1'b1 { mul_legal } else { rv64i_legal };
+        let alu_op =
+            if funct7 == 7'b0000001 && funct3 == 3'b000 { alu_op_t::ALU_MUL }
+            else if funct7 == 7'b0000001 && funct3 == 3'b001 { alu_op_t::ALU_MULH }
+            else if funct7 == 7'b0000001 && funct3 == 3'b010 { alu_op_t::ALU_MULHSU }
+            else if funct7 == 7'b0000001 && funct3 == 3'b011 { alu_op_t::ALU_MULHU }
+            else if funct7 == 7'b0000001 && funct3 == 3'b100 { alu_op_t::ALU_DIV }
+            else if funct7 == 7'b0000001 && funct3 == 3'b101 { alu_op_t::ALU_DIVU }
+            else if funct7 == 7'b0000001 && funct3 == 3'b110 { alu_op_t::ALU_REM }
+            else if funct7 == 7'b0000001 && funct3 == 3'b111 { alu_op_t::ALU_REMU }
+            else if funct3 == 3'b000 && funct7 == 7'b0100000 { alu_op_t::ALU_SUB }
+            else if funct3 == 3'b000 { alu_op_t::ALU_ADD }
+            else if funct3 == 3'b001 { alu_op_t::ALU_SLL }
+            else if funct3 == 3'b101 && funct7 == 7'b0100000 { alu_op_t::ALU_SRA }
+            else if funct3 == 3'b101 { alu_op_t::ALU_SRL }
+            else if funct3 == 3'b010 { alu_op_t::ALU_SLT }
+            else if funct3 == 3'b011 { alu_op_t::ALU_SLTU }
+            else if funct3 == 3'b100 { alu_op_t::ALU_XOR }
+            else if funct3 == 3'b110 { alu_op_t::ALU_OR }
+            else if funct3 == 3'b111 { alu_op_t::ALU_AND }
+            else { alu_op_t::ALU_ADD };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = legal; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else if opcode == 7'b0111011 {
+        let is_m = funct7 == 7'b0000001;
+        let alu =
+            if is_m == 1'b1 && funct3 == 3'b000 { alu_op_t::ALU_MULW }
+            else if is_m == 1'b1 && funct3 == 3'b100 { alu_op_t::ALU_DIVW }
+            else if is_m == 1'b1 && funct3 == 3'b101 { alu_op_t::ALU_DIVUW }
+            else if is_m == 1'b1 && funct3 == 3'b110 { alu_op_t::ALU_REMW }
+            else if is_m == 1'b1 && funct3 == 3'b111 { alu_op_t::ALU_REMUW }
+            else if funct3 == 3'b000 && funct7 == 7'b0100000 { alu_op_t::ALU_SUBW }
+            else if funct3 == 3'b000 { alu_op_t::ALU_ADDW }
+            else if funct3 == 3'b001 { alu_op_t::ALU_SLLW }
+            else if funct3 == 3'b101 && funct7 == 7'b0100000 { alu_op_t::ALU_SRAW }
+            else { alu_op_t::ALU_SRLW };
+        let legal =
+            if funct7 == 7'b0000001 {
+                funct3 == 3'b000 || funct3 == 3'b100 || funct3 == 3'b101 ||
+                funct3 == 3'b110 || funct3 == 3'b111
+            } else { 1'b1 };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b1; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else if opcode == 7'b0101111 {
+        // RV64A atomics: LR/SC/AMO*.  funct5 = instr[31:27].
+        let funct5_amo = instr[27+:5];
+        let legal_w = funct3 == 3'b010 || funct3 == 3'b011;
+        let is_lr  = funct5_amo == 5'b00010;
+        let is_sc  = funct5_amo == 5'b00011;
+        // LR: load only; SC and AMO*: mem_read+mem_write (AMO flag in MEM stage).
+        // alu_op=ALU_COPY_A so alu_result = rs1 (the address).
+        // SC writes rd=0 via WB_MEM with load_data forced to 0 in MEM stage.
+        let mem_r = if is_lr == 1'b1 { 1'b1 } else { 1'b1 };
+        let mem_w = if is_lr == 1'b1 { 1'b0 } else { 1'b1 };
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_COPY_A; branch_op = branch_op_t::BR_NONE; mem_read = mem_r; mem_write = mem_w; reg_write = legal_w; cap_write = 1'b0; wb_sel = wb_sel_t::WB_MEM; use_imm = 1'b0; is_system = 1'b0; mem_width = funct3; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal_w == 1'b0)}
+    } else if opcode == 7'b0001111 {
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_ADD; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = 1'b0; cap_write = 1'b0; wb_sel = wb_sel_t::WB_NONE; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = 1'b0}
+    } else if opcode == 7'b0001011 {
+        let cap_op =
+            if funct5 == 5'h00 { cap_op_t::CAP_OP_LCC }
+            else if funct5 == 5'h01 { cap_op_t::CAP_OP_SCC }
+            else if funct5 == 5'h02 { cap_op_t::CAP_OP_SEAL }
+            else if funct5 == 5'h03 { cap_op_t::CAP_OP_RETSEAL }
+            else if funct5 == 5'h04 { cap_op_t::CAP_OP_CJALR }
+            else if funct5 == 5'h05 { cap_op_t::CAP_OP_CINCOFFSET }
+            else if funct5 == 5'h06 { cap_op_t::CAP_OP_SHRINK }
+            else if funct5 == 5'h07 { cap_op_t::CAP_OP_TIGHTEN }
+            else if funct5 == 5'h08 { cap_op_t::CAP_OP_MOVC }
+            else if funct5 == 5'h09 { cap_op_t::CAP_OP_DROP }
+            else if funct5 == 5'h0a { cap_op_t::CAP_OP_REVOKE }
+            else if funct5 == 5'h0b { cap_op_t::CAP_OP_INIT }
+            else if funct5 == 5'h0c { cap_op_t::CAP_OP_LDC }
+            else if funct5 == 5'h0d { cap_op_t::CAP_OP_STC }
+            else if funct5 == 5'h0e { cap_op_t::CAP_OP_CALL }
+            else if funct5 == 5'h0f { cap_op_t::CAP_OP_RETURN }
+            else if funct5 == 5'h10 { cap_op_t::CAP_OP_CAPENTER }
+            else if funct5 == 5'h11 { cap_op_t::CAP_OP_CAPEXIT }
+            else if funct5 == 5'h12 { cap_op_t::CAP_OP_SPLIT }
+            else if funct5 == 5'h13 { cap_op_t::CAP_OP_DELIN }
+            else if funct5 == 5'h14 { cap_op_t::CAP_OP_MREV }
+            else if funct5 == 5'h15 { cap_op_t::CAP_OP_CBNZ }
+            else { cap_op_t::CAP_OP_NONE };
+        let cap_write =
+            cap_op == cap_op_t::CAP_OP_LCC ||
+            cap_op == cap_op_t::CAP_OP_CINCOFFSET ||
+            cap_op == cap_op_t::CAP_OP_SHRINK ||
+            cap_op == cap_op_t::CAP_OP_TIGHTEN ||
+            cap_op == cap_op_t::CAP_OP_SEAL ||
+            cap_op == cap_op_t::CAP_OP_RETSEAL ||
+            cap_op == cap_op_t::CAP_OP_CJALR ||
+            cap_op == cap_op_t::CAP_OP_MOVC ||
+            cap_op == cap_op_t::CAP_OP_INIT ||
+            cap_op == cap_op_t::CAP_OP_LDC ||
+            cap_op == cap_op_t::CAP_OP_CALL ||
+            cap_op == cap_op_t::CAP_OP_RETURN ||
+            cap_op == cap_op_t::CAP_OP_CAPENTER ||
+            cap_op == cap_op_t::CAP_OP_CAPEXIT ||
+            cap_op == cap_op_t::CAP_OP_SPLIT;
+        let reg_write =
+            cap_op == cap_op_t::CAP_OP_SCC ||
+            cap_op == cap_op_t::CAP_OP_STC ||
+            cap_op == cap_op_t::CAP_OP_CBNZ;
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_COPY_A; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = reg_write; cap_write = cap_write; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b0; is_system = 1'b0; mem_width = 3'd0; cap_op = cap_op}; illegal = (cap_op == cap_op_t::CAP_OP_NONE)}
+    } else if opcode == 7'b1110011 {
+        let sys_imm = instr[20+:12];
+        let has_rd = call rd_of(instr) != <(5'd0)::reg_idx_t>;
+        let is_raw_system = funct3 == 3'b000;
+        let legal =
+            funct3 != 3'b000 ||
+            sys_imm == 12'h302 ||
+            sys_imm == 12'h102 ||
+            sys_imm == 12'h000 ||
+            sys_imm == 12'h001 ||
+            sys_imm == 12'h105 ||
+            funct7 == 7'b0001001;
+        decode_ctrl_t::{ctrl = ctrl_sig_t::{src_a_pc = 1'b0; alu_op = alu_op_t::ALU_COPY_A; branch_op = branch_op_t::BR_NONE; mem_read = 1'b0; mem_write = 1'b0; reg_write = if is_raw_system == 1'b1 { 1'b0 } else { has_rd }; cap_write = 1'b0; wb_sel = wb_sel_t::WB_ALU; use_imm = 1'b0; is_system = 1'b1; mem_width = 3'd0; cap_op = cap_op_t::CAP_OP_NONE}; illegal = (legal == 1'b0)}
+    } else {
+        decode_ctrl_t::{ctrl = base; illegal = 1'b1}
+    }
+}
