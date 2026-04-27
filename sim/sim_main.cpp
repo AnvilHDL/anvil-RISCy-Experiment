@@ -113,6 +113,11 @@ static constexpr std::uint64_t RAM_SIZE = 8ULL * 1024 * 1024;
 // Replaces the old Verilator imem_q_q/dmem_q_q arrays.
 static std::uint8_t host_mem[RAM_SIZE];
 
+// Capability tag shadow: one bit per 32-byte-aligned slot.
+// tag=0 means the slot holds plain integer data, not a valid capability.
+static constexpr uint32_t CAP_BYTES = 32u;
+static bool cap_tags[RAM_SIZE / CAP_BYTES];
+
 // ============================================================
 // Virtio-blk helper functions (inside namespace for host_mem access).
 // ============================================================
@@ -1183,6 +1188,58 @@ static const uint8_t CTYPE_EXIT       = 6;
 
 static CapabilityT cap_rf[32];
 
+// Capability memory layout (32 bytes = 4 × uint64_t, CAP_BYTES-aligned):
+//   word 0: cursor
+//   word 1: base
+//   word 2: end_
+//   word 3: ctype:3 | world:1<<3 | perms:3<<4 | async_:2<<7 | reg_id:5<<9 | rev_epoch<<14
+// cap_tags[off/CAP_BYTES] tracks whether slot is a real capability or plain data.
+
+static void cap_store_to_mem(uint64_t addr, const CapabilityT& cap) {
+    if (addr < RAM_BASE || addr + CAP_BYTES > RAM_BASE + RAM_SIZE) return;
+    if (addr % CAP_BYTES != 0) return;
+    const uint32_t off = static_cast<uint32_t>(addr - RAM_BASE);
+    auto wr64 = [&](uint32_t o, uint64_t v) {
+        for (int b = 0; b < 8; ++b) host_mem[off + o + b] = static_cast<uint8_t>(v >> (b * 8));
+    };
+    wr64(0,  cap.cursor);
+    wr64(8,  cap.base);
+    wr64(16, cap.end_);
+    const uint64_t packed = (static_cast<uint64_t>(cap.ctype) & 0x7u)
+                          | (static_cast<uint64_t>(cap.world  & 1u) << 3u)
+                          | (static_cast<uint64_t>(cap.perms  & 7u) << 4u)
+                          | (static_cast<uint64_t>(cap.async_ & 3u) << 7u)
+                          | (static_cast<uint64_t>(cap.reg_id & 0x1fu) << 9u)
+                          | (cap.rev_epoch << 14u);
+    wr64(24, packed);
+    cap_tags[off / CAP_BYTES] = cap.valid;
+}
+
+static CapabilityT cap_load_from_mem(uint64_t addr) {
+    if (addr < RAM_BASE || addr + CAP_BYTES > RAM_BASE + RAM_SIZE) return k_zero_cap;
+    if (addr % CAP_BYTES != 0) return k_zero_cap;
+    const uint32_t off = static_cast<uint32_t>(addr - RAM_BASE);
+    if (!cap_tags[off / CAP_BYTES]) return k_zero_cap;
+    auto rd64 = [&](uint32_t o) -> uint64_t {
+        uint64_t v = 0;
+        for (int b = 0; b < 8; ++b) v |= static_cast<uint64_t>(host_mem[off + o + b]) << (b * 8);
+        return v;
+    };
+    CapabilityT c;
+    c.valid     = true;
+    c.cursor    = rd64(0);
+    c.base      = rd64(8);
+    c.end_      = rd64(16);
+    const uint64_t packed = rd64(24);
+    c.ctype     = static_cast<uint8_t>( packed        & 0x7u);
+    c.world     = static_cast<uint8_t>((packed >>  3u) & 0x1u);
+    c.perms     = static_cast<uint8_t>((packed >>  4u) & 0x7u);
+    c.async_    = static_cast<uint8_t>((packed >>  7u) & 0x3u);
+    c.reg_id    = static_cast<uint8_t>((packed >>  9u) & 0x1fu);
+    c.rev_epoch = packed >> 14u;
+    return c;
+}
+
 static void cap_rf_reset() {
     for (int i = 0; i < 32; ++i) cap_rf[i] = k_zero_cap;
     // c1 = hardware root capability: covers all RAM, all permissions.
@@ -1363,27 +1420,47 @@ static void commit_cap_wb(Vtop___024root* rootp) {
     const uint32_t cap_op = (p[2u] >> 7u) & 0x1fu;  // ctrl.cap_op (bits [75:71])
 
     if (cap_write) {
-        const CapabilityT cap_a   = cap_rf[rs1];
-        const CapabilityT cap_b   = cap_rf[rs2];
-        const uint64_t scalar_arg = read_gpr(rootp, rs2);
-        const CapabilityT result  = cpp_cap_alu_exec(cap_op, cap_a, cap_b, scalar_arg);
-        std::fprintf(stderr,
-            "[CAP-WB cyc=%llu] op=%u instr=0x%08x rs1=%u rs2=%u rd=%u "
-            "valid=%d ctype=%u cursor=0x%llx base=0x%llx end=0x%llx perms=%u\n",
-            (unsigned long long)read_mcycle(rootp), cap_op, instr,
-            rs1, rs2, rd, (int)result.valid, (unsigned)result.ctype,
-            (unsigned long long)result.cursor,
-            (unsigned long long)result.base,
-            (unsigned long long)result.end_,
-            (unsigned)result.perms);
+        CapabilityT result;
+        if (cap_op == C_OP_LDC) {
+            // LDC rd, rs1: load capability from host_mem at address rs1_int.
+            const uint64_t addr = read_gpr(rootp, rs1);
+            result = cap_load_from_mem(addr);
+            std::fprintf(stderr,
+                "[CAP-LDC cyc=%llu] instr=0x%08x rs1=%u rd=%u addr=0x%llx valid=%d\n",
+                (unsigned long long)read_mcycle(rootp), instr, rs1, rd,
+                (unsigned long long)addr, (int)result.valid);
+        } else {
+            const CapabilityT cap_a   = cap_rf[rs1];
+            const CapabilityT cap_b   = cap_rf[rs2];
+            const uint64_t scalar_arg = read_gpr(rootp, rs2);
+            result = cpp_cap_alu_exec(cap_op, cap_a, cap_b, scalar_arg);
+            std::fprintf(stderr,
+                "[CAP-WB cyc=%llu] op=%u instr=0x%08x rs1=%u rs2=%u rd=%u "
+                "valid=%d ctype=%u cursor=0x%llx base=0x%llx end=0x%llx perms=%u\n",
+                (unsigned long long)read_mcycle(rootp), cap_op, instr,
+                rs1, rs2, rd, (int)result.valid, (unsigned)result.ctype,
+                (unsigned long long)result.cursor,
+                (unsigned long long)result.base,
+                (unsigned long long)result.end_,
+                (unsigned)result.perms);
+        }
         if (rd != 0u) cap_rf[rd] = result;
     } else {
         // SCC reads cursor; CBNZ reads valid flag; both patch the integer WB result.
+        // STC stores cap_rf[rs2] to host_mem at address rs1_int.
         uint64_t patched = 0;
         if (cap_op == C_OP_SCC) {
             patched = cap_rf[rs1].cursor;
         } else if (cap_op == C_OP_CBNZ) {
             patched = cap_rf[rs1].valid ? 1u : 0u;
+        } else if (cap_op == C_OP_STC) {
+            const uint64_t addr = read_gpr(rootp, rs1);
+            cap_store_to_mem(addr, cap_rf[rs2]);
+            std::fprintf(stderr,
+                "[CAP-STC cyc=%llu] instr=0x%08x rs1=%u rs2=%u addr=0x%llx valid=%d\n",
+                (unsigned long long)read_mcycle(rootp), instr, rs1, rs2,
+                (unsigned long long)addr, (int)cap_rf[rs2].valid);
+            return;  // RTL writes rs1_int = addr to rd; no alu_result patch needed
         } else {
             return;
         }
