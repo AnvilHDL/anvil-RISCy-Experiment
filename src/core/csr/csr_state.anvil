@@ -175,6 +175,10 @@ func csr_is_supported(addr : csr_idx_t) {
     addr == <(12'h106)::csr_idx_t> ||
     addr == call csr_stimecmp_idx() ||
     addr == call csr_menvcfg_idx() ||
+    addr == call csr_cap_ceh_idx() ||
+    addr == call csr_cap_cinit_idx() ||
+    addr == call csr_cap_epc_idx() ||
+    addr == call csr_cap_switch_cap_idx() ||
     call is_pmp_csr(addr) == 1'b1
 }
 

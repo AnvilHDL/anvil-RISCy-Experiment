@@ -85,8 +85,6 @@ func bubble_if_id() {
         fetched = fetch_pkt_t::{pc = <(64'd0)::xlen_t>; instr = <(32'd0)::instr_t>};
         predicted_taken = 1'b0;
         predicted_target = <(64'd0)::xlen_t>;
-        cap_target_reg = <(5'd0)::reg_idx_t>;
-        cap_result = call zero_cap();
         exc = call no_exc()
     }
 }
@@ -101,8 +99,6 @@ func bubble_id_ex() {
         rd = <(5'd0)::reg_idx_t>;
         rs1_val = <(64'd0)::xlen_t>;
         rs2_val = <(64'd0)::xlen_t>;
-        cap_rs1_val = call zero_cap();
-        cap_rs2_val = call zero_cap();
         imm = <(64'd0)::xlen_t>;
         predicted_taken = 1'b0;
         predicted_target = <(64'd0)::xlen_t>;

@@ -624,6 +624,9 @@ func alu_exec(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
             call arithmetic_shr_32(sex32, rhs)
         }
         else if op == alu_op_t::ALU_MULW   { call mulw(lhs, rhs) }
+        // DIV/REM are handled by the iterative divider in pipeline_core.
+        // Keeping the 64-step divider out of this reachable combinational
+        // ALU expression tree prevents Anvil elaboration from exhausting memory.
         else if op == alu_op_t::ALU_DIV   ||
                 op == alu_op_t::ALU_DIVU  ||
                 op == alu_op_t::ALU_REM   ||
@@ -631,7 +634,7 @@ func alu_exec(op : alu_op_t, lhs : xlen_t, rhs : xlen_t) {
                 op == alu_op_t::ALU_DIVW  ||
                 op == alu_op_t::ALU_DIVUW ||
                 op == alu_op_t::ALU_REMW  ||
-                op == alu_op_t::ALU_REMUW { call do_div_remu(op, lhs, rhs) }
+                op == alu_op_t::ALU_REMUW { <(64'd0)::xlen_t> }
         else { rhs };
     alu_result_t::{result = result; zero = (result == <(64'd0)::xlen_t>); negative = result[63]}
 }

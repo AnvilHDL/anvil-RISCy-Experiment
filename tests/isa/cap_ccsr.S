@@ -5,8 +5,8 @@
 #   0xBC2 = epc        (capability exception PC)
 #   0xBC3 = switch_cap (domain-switch capability)
 #
-# These addresses are outside csr_is_supported(); the harness intercepts the
-# resulting illegal-instruction trap and emulates CSRRW/CSRRS/CSRRC semantics.
+# These CSRs are implemented by the RTL CSR path and support normal
+# CSRRW/CSRRS/CSRRC semantics.
 #
 # Tests:
 #   1. CSRRW ceh (0xBC0): write value, read it back.

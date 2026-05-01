@@ -36,7 +36,9 @@ import "./packet_utils.anvil"
 //    14 GB peak RSS that an in-RTL PTW FSM would require at elaboration time.
 //
 //  · Interrupts are checked at the START of every cycle (before any
-//    instruction retires).  If int_fire is set, the pipeline is flushed and
+//    instruction retires).  Timer pending bits are generated in RTL from
+//    mtime_q/mtimecmp_q/stimecmp_q; external device pending still comes from
+//    the Verilator MMIO model via ext_mip_q. If int_fire is set, the pipeline is flushed and
 //    the interrupt is taken before the oldest in-flight instruction can commit.
 //    This means the "interrupted" instruction WILL be re-executed after MRET.
 //
@@ -58,6 +60,14 @@ func mem_addr_in_range(addr : xlen_t) {
     // 8 MB RAM window: 0x80000000 – 0x807FFFFF.
     // addr[23+:41] == 256 covers 0x80000000-0x807FFFFF.
     addr[23+:41] == 41'd256 || call is_mmio_addr(addr) == 1'b1
+}
+
+func clint_mtimecmp_addr(addr : xlen_t) {
+    (addr & <(64'hfffffffffffffff8)::xlen_t>) == <(64'h0000000002004000)::xlen_t>
+}
+
+func clint_mtime_addr(addr : xlen_t) {
+    (addr & <(64'hfffffffffffffff8)::xlen_t>) == <(64'h000000000200bff8)::xlen_t>
 }
 
 func mem_align_ok(addr : xlen_t, funct3 : logic[3]) {
@@ -130,6 +140,86 @@ func core_return_redirect_now(pkt : id_ex_pkt_t) {
     (call is_mret_instr(pkt.instr) == 1'b1 || call is_sret_instr(pkt.instr) == 1'b1)
 }
 
+func core_is_div_op(op : alu_op_t) {
+    op == alu_op_t::ALU_DIV   ||
+    op == alu_op_t::ALU_DIVU  ||
+    op == alu_op_t::ALU_REM   ||
+    op == alu_op_t::ALU_REMU  ||
+    op == alu_op_t::ALU_DIVW  ||
+    op == alu_op_t::ALU_DIVUW ||
+    op == alu_op_t::ALU_REMW  ||
+    op == alu_op_t::ALU_REMUW
+}
+
+func core_div_is_signed(op : alu_op_t) {
+    op == alu_op_t::ALU_DIV  ||
+    op == alu_op_t::ALU_REM  ||
+    op == alu_op_t::ALU_DIVW ||
+    op == alu_op_t::ALU_REMW
+}
+
+func core_div_is_rem(op : alu_op_t) {
+    op == alu_op_t::ALU_REM   ||
+    op == alu_op_t::ALU_REMU  ||
+    op == alu_op_t::ALU_REMW  ||
+    op == alu_op_t::ALU_REMUW
+}
+
+func core_div_is_word(op : alu_op_t) {
+    op == alu_op_t::ALU_DIVW  ||
+    op == alu_op_t::ALU_DIVUW ||
+    op == alu_op_t::ALU_REMW  ||
+    op == alu_op_t::ALU_REMUW
+}
+
+func core_div_eff_operand(op : alu_op_t, val : xlen_t) {
+    if op == alu_op_t::ALU_DIVW || op == alu_op_t::ALU_REMW {
+        call sext32_result(val[0+:32])
+    } else if op == alu_op_t::ALU_DIVUW || op == alu_op_t::ALU_REMUW {
+        <(#{32'd0, val[0+:32]})::xlen_t>
+    } else {
+        val
+    }
+}
+
+func core_abs_if_signed(val : xlen_t, is_signed : logic) {
+    if is_signed == 1'b1 && val[63] == 1'b1 { <(64'd0)::xlen_t> - val }
+    else { val }
+}
+
+func core_div_step_q(q : xlen_t, r : xlen_t, b : xlen_t) {
+    let nr = <(#{r[0+:63], q[63+:1]})::xlen_t>;
+    let take = call unsigned_ge(nr, b);
+    <(#{q[0+:63], take})::xlen_t>
+}
+
+func core_div_step_r(q : xlen_t, r : xlen_t, b : xlen_t) {
+    let nr = <(#{r[0+:63], q[63+:1]})::xlen_t>;
+    let take = call unsigned_ge(nr, b);
+    if take == 1'b1 { nr - b } else { nr }
+}
+
+func core_div_result(q : xlen_t, r : xlen_t, orig_a : xlen_t,
+                     lhs_neg : logic, rhs_neg : logic,
+                     is_signed : logic, is_rem : logic,
+                     is_word : logic, dbz : logic) {
+    let raw =
+        if dbz == 1'b1 {
+            if is_rem == 1'b1 { orig_a } else { <(64'hffffffffffffffff)::xlen_t> }
+        } else if is_rem == 1'b1 {
+            r
+        } else {
+            q
+        };
+    let need_neg =
+        is_signed == 1'b1 &&
+        dbz == 1'b0 &&
+        ((is_rem == 1'b1 && lhs_neg == 1'b1) ||
+         (is_rem == 1'b0 && lhs_neg != rhs_neg));
+    let signed_raw = if need_neg == 1'b1 { <(64'd0)::xlen_t> - raw } else { raw };
+    if is_word == 1'b1 { call sext32_result(signed_raw[0+:32]) } else { signed_raw }
+}
+
 // ── Helper functions (combinatorial, no state) ───────────────────────────────
 
 proc pipeline_core() {
@@ -157,6 +247,15 @@ proc pipeline_core() {
     reg stval_q     : xlen_t;
     reg satp_q      : xlen_t;
     reg stimecmp_q  : xlen_t;
+    reg mtime_q     : xlen_t;
+    reg mtimecmp_q  : xlen_t;
+    reg mtime_div_q : logic[7];
+    // Capstone scalar CSRs. Capability-valued state still needs a real RTL
+    // capability file, but the custom CSR read/write semantics are hardware-owned.
+    reg cap_ceh_q        : xlen_t;
+    reg cap_cinit_q      : xlen_t;
+    reg cap_epc_q        : xlen_t;
+    reg cap_switch_cap_q : xlen_t;
     // Sv39 harness interface.
     // The C++ harness manages TLB state and PTW entirely.  Each cycle it writes
     // these registers before the clock edge so the Anvil proc can use them.
@@ -187,6 +286,20 @@ proc pipeline_core() {
     reg mem_store_addr_q  : xlen_t;   // physical byte address of store
     reg mem_store_word_q  : xlen_t;   // full masked 64-bit word to write
     reg ex_alu_result_q   : xlen_t;   // mirrors next_ex_mem.alu_result for harness mem pre-populate
+    // Iterative RTL divider for RV64M DIV/REM. One restoring-division step per
+    // cycle keeps Anvil elaboration bounded and is synthesizable.
+    reg div_busy_q       : logic;
+    reg div_count_q      : logic[7];
+    reg div_q_q          : xlen_t;
+    reg div_r_q          : xlen_t;
+    reg div_b_q          : xlen_t;
+    reg div_orig_a_q     : xlen_t;
+    reg div_lhs_neg_q    : logic;
+    reg div_rhs_neg_q    : logic;
+    reg div_signed_q     : logic;
+    reg div_rem_q        : logic;
+    reg div_word_q       : logic;
+    reg div_dbz_q        : logic;
     reg csr_q : rv64i_csr_state_t;
     reg if_id_q : if_id_pkt_t;
     reg id_ex_q : id_ex_pkt_t;
@@ -212,6 +325,13 @@ proc pipeline_core() {
                 set stval_q     := <(64'd0)::xlen_t>;
                 set satp_q      := <(64'd0)::xlen_t>;
                 set stimecmp_q  := <(64'd0)::xlen_t>;
+                set mtime_q     := <(64'd0)::xlen_t>;
+                set mtimecmp_q  := <(64'hffffffffffffffff)::xlen_t>;
+                set mtime_div_q := 7'd0;
+                set cap_ceh_q        := <(64'd0)::xlen_t>;
+                set cap_cinit_q      := <(64'd0)::xlen_t>;
+                set cap_epc_q        := <(64'd0)::xlen_t>;
+                set cap_switch_cap_q := <(64'd0)::xlen_t>;
                 set sv39_stall_q := 1'b0;
                 set sv39_if_valid_q := 1'b0;
                 set sv39_if_pa_q := <(64'd0)::xlen_t>;
@@ -227,6 +347,18 @@ proc pipeline_core() {
                 set mem_store_addr_q := <(64'd0)::xlen_t>;
                 set mem_store_word_q := <(64'd0)::xlen_t>;
                 set ex_alu_result_q := <(64'd0)::xlen_t>;
+                set div_busy_q := 1'b0;
+                set div_count_q := 7'd0;
+                set div_q_q := <(64'd0)::xlen_t>;
+                set div_r_q := <(64'd0)::xlen_t>;
+                set div_b_q := <(64'd0)::xlen_t>;
+                set div_orig_a_q := <(64'd0)::xlen_t>;
+                set div_lhs_neg_q := 1'b0;
+                set div_rhs_neg_q := 1'b0;
+                set div_signed_q := 1'b0;
+                set div_rem_q := 1'b0;
+                set div_word_q := 1'b0;
+                set div_dbz_q := 1'b0;
                 set trace_enable_q := 1'b0;
                 set sim_exit_valid_q := 1'b0;
                 set sim_exit_code_q := <(64'd0)::xlen_t>;
@@ -245,9 +377,6 @@ proc pipeline_core() {
             // sequentially with >>, and new register values are committed in
             // the final {} block before `cycle 1`.
 
-            // Sv39: harness writes sv39_* registers before each clock edge.
-            // pipeline_stall is just a scalar register read — no wide mux.
-            let pipeline_stall = *sv39_stall_q == 1'b1 >>
             let cur_pc = *pc_q >>
             let cur_redirect_hold = *redirect_hold_q >>
             let cur_if_id = *if_id_q >>
@@ -268,12 +397,46 @@ proc pipeline_core() {
             let cur_stval    = *stval_q >>
             let cur_satp     = *satp_q >>
             let cur_stimecmp = *stimecmp_q >>
+            let cur_mtime    = *mtime_q >>
+            let cur_mtimecmp = *mtimecmp_q >>
+            let cur_cap_ceh        = *cap_ceh_q >>
+            let cur_cap_cinit      = *cap_cinit_q >>
+            let cur_cap_epc        = *cap_epc_q >>
+            let cur_cap_switch_cap = *cap_switch_cap_q >>
+            // Sv39 harness stalls and the RTL divider both freeze the in-order
+            // pipeline. DIV/REM starts only when Sv39 is not already holding
+            // the machine, so the divider state corresponds to the current EX insn.
+            let sv39_pipeline_stall = *sv39_stall_q == 1'b1 >>
+            let cur_div_done = *div_busy_q == 1'b1 && *div_count_q == 7'd64 >>
+            let cur_div_op_in_ex =
+                cur_id_ex.valid == 1'b1 &&
+                cur_id_ex.exc.has_exc == 1'b0 &&
+                call core_is_div_op(cur_id_ex.ctrl.alu_op) == 1'b1 >>
+            let div_start_now =
+                sv39_pipeline_stall == 1'b0 &&
+                *div_busy_q == 1'b0 &&
+                cur_div_op_in_ex == 1'b1 >>
+            let div_wait_now = *div_busy_q == 1'b1 && cur_div_done == 1'b0 >>
+            let pipeline_stall =
+                sv39_pipeline_stall == 1'b1 ||
+                div_start_now == 1'b1 ||
+                div_wait_now == 1'b1 >>
             let retire_trap_now = call core_trap_now(cur_mem_wb) >>
-            // Asynchronous interrupt check.  ext_mip_q is written each cycle by the
-            // simulation harness (CLINT/PLIC logic).  Interrupts fire when:
+            // Asynchronous interrupt check. Timer interrupt pending bits are
+            // generated in RTL; ext_mip_q carries only external device pending
+            // state from the simulation MMIO model. Interrupts fire when:
             //   (mip | ext_mip) & mie != 0 AND (priv < M OR mstatus.MIE == 1)
             // A pending synchronous trap (retire_trap_now) takes priority.
-            let eff_mip = cur_mip | *ext_mip_q >>
+            let timer_mtip =
+                cur_mtimecmp != <(64'hffffffffffffffff)::xlen_t> &&
+                call unsigned_ge(cur_mtime, cur_mtimecmp) == 1'b1 >>
+            let timer_stip =
+                cur_stimecmp != <(64'd0)::xlen_t> &&
+                call unsigned_ge(cur_mtime, cur_stimecmp) == 1'b1 >>
+            let timer_mip =
+                (if timer_mtip == 1'b1 { <(64'h0000000000000080)::xlen_t> } else { <(64'd0)::xlen_t> }) |
+                (if timer_stip == 1'b1 { <(64'h0000000000000020)::xlen_t> } else { <(64'd0)::xlen_t> }) >>
+            let eff_mip = cur_mip | *ext_mip_q | timer_mip >>
             let int_pending = eff_mip & cur_mie >>
             let mstatus_mie_bit = cur_csr.mstatus[3] >>
             let priv_is_m = cur_priv == priv_lvl_t::PRIV_LVL_M >>
@@ -281,12 +444,14 @@ proc pipeline_core() {
                 retire_trap_now == 1'b0 &&
                 int_pending != <(64'd0)::xlen_t> &&
                 (priv_is_m == 1'b0 || mstatus_mie_bit == 1'b1) >>
-            // Priority encoder: MTI(7) > MSI(3) > MEI(11); cause has bit 63 set.
+            // Priority encoder: MTI(7) > MSI(3) > STIP(5) > SSIP(1) > SEIP(9) > MEIP(11).
+            // Cause has bit 63 set for interrupts.
             let int_cause_val =
                 if int_pending[7] == 1'b1 { <(64'h8000000000000007)::xlen_t> }
                 else if int_pending[3] == 1'b1 { <(64'h8000000000000003)::xlen_t> }
                 else if int_pending[5] == 1'b1 { <(64'h8000000000000005)::xlen_t> }
                 else if int_pending[1] == 1'b1 { <(64'h8000000000000001)::xlen_t> }
+                else if int_pending[9] == 1'b1 { <(64'h8000000000000009)::xlen_t> }
                 else { <(64'h800000000000000b)::xlen_t> } >>
             let int_pc = if cur_mem_wb.valid == 1'b1 { cur_mem_wb.pc } else { cur_pc } >>
 
@@ -298,20 +463,6 @@ proc pipeline_core() {
 
             if wb_fire == 1'b1 {
                 set regs_q[cur_mem_wb.rd] := wb_data
-            } else {
-                ()
-            };
-
-            // Cap register writeback: commit cap_result to cap_regs_q when the retiring
-            // instruction has cap_write=1 and no exception is pending.
-            let cap_wb_fire =
-                cur_mem_wb.valid == 1'b1 &&
-                cur_mem_wb.ctrl.cap_write == 1'b1 &&
-                cur_mem_wb.exc.has_exc == 1'b0 &&
-                int_fire == 1'b0 &&
-                pipeline_stall == 1'b0 >>
-            if cap_wb_fire == 1'b1 {
-                () // TODO: cap register writes
             } else {
                 ()
             };
@@ -373,6 +524,10 @@ proc pipeline_core() {
             let store_masked =
                 call apply_store_mask(mem_rdata, store_src,
                                       cur_ex_mem.ctrl.mem_width, eff_mem_addr[0+:3]) >>
+            let clint_mtimecmp_store_now =
+                any_store_now == 1'b1 && call clint_mtimecmp_addr(eff_mem_addr) == 1'b1 >>
+            let clint_mtime_store_now =
+                any_store_now == 1'b1 && call clint_mtime_addr(eff_mem_addr) == 1'b1 >>
             // For load_data: AMO returns old value (mem_rdata); SC returns 0 (always-succeed).
             let amo_rd_val = if is_sc == 1'b1 { <(64'd0)::xlen_t> } else { mem_rdata } >>
             let raw_load_word = if is_amo == 1'b1 { amo_rd_val } else { mem_rdata } >>
@@ -543,6 +698,18 @@ proc pipeline_core() {
             let next_stimecmp =
                 if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_stimecmp_idx() { csr_val_w }
                 else { cur_stimecmp } >>
+            let next_cap_ceh =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_cap_ceh_idx() { csr_val_w }
+                else { cur_cap_ceh } >>
+            let next_cap_cinit =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_cap_cinit_idx() { csr_val_w }
+                else { cur_cap_cinit } >>
+            let next_cap_epc =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_cap_epc_idx() { csr_val_w }
+                else { cur_cap_epc } >>
+            let next_cap_switch_cap =
+                if pipeline_stall == 1'b0 && csr_we_now == 1'b1 && csr_addr_w == call csr_cap_switch_cap_idx() { csr_val_w }
+                else { cur_cap_switch_cap } >>
 
             // ── EX: ALU / branch / CSR ────────────────────────────────────────
             // Forwarded operands cover the EX→ID and MEM→ID bypass paths.
@@ -555,6 +722,20 @@ proc pipeline_core() {
                 if cur_id_ex.ctrl.use_imm == 1'b1 { cur_id_ex.imm }
                 else { fwd_rs2 } >>
             let alu_res = call alu_exec(cur_id_ex.ctrl.alu_op, alu_a, alu_b) >>
+            let div_eff_a = call core_div_eff_operand(cur_id_ex.ctrl.alu_op, fwd_rs1) >>
+            let div_eff_b = call core_div_eff_operand(cur_id_ex.ctrl.alu_op, fwd_rs2) >>
+            let div_is_signed = call core_div_is_signed(cur_id_ex.ctrl.alu_op) >>
+            let div_is_rem = call core_div_is_rem(cur_id_ex.ctrl.alu_op) >>
+            let div_is_word = call core_div_is_word(cur_id_ex.ctrl.alu_op) >>
+            let div_abs_a = call core_abs_if_signed(div_eff_a, div_is_signed) >>
+            let div_abs_b = call core_abs_if_signed(div_eff_b, div_is_signed) >>
+            let div_step_q = call core_div_step_q(*div_q_q, *div_r_q, *div_b_q) >>
+            let div_step_r = call core_div_step_r(*div_q_q, *div_r_q, *div_b_q) >>
+            let div_result =
+                call core_div_result(*div_q_q, *div_r_q, *div_orig_a_q,
+                                     *div_lhs_neg_q, *div_rhs_neg_q,
+                                     *div_signed_q, *div_rem_q,
+                                     *div_word_q, *div_dbz_q) >>
             let ex_br_res = call branch_eval(cur_id_ex.ctrl.branch_op, cur_id_ex.pc, fwd_rs1, fwd_rs2, cur_id_ex.imm) >>
             let sys_exc =
                 if cur_id_ex.ctrl.is_system == 1'b1 && cur_id_ex.exc.has_exc == 1'b0 {
@@ -583,12 +764,12 @@ proc pipeline_core() {
                     else if ex_csr_addr == call csr_sepc_idx() { cur_sepc }
                     else if ex_csr_addr == call csr_scause_idx() { cur_scause }
                     else if ex_csr_addr == call csr_stval_idx() { cur_stval }
-                    else if ex_csr_addr == call csr_sip_idx() { cur_mip | *ext_mip_q }
+                    else if ex_csr_addr == call csr_sip_idx() { cur_mip | *ext_mip_q | timer_mip }
                     else if ex_csr_addr == call csr_satp_idx() { cur_satp }
                     else if ex_csr_addr == call csr_medeleg_idx() { cur_medeleg }
                     else if ex_csr_addr == call csr_mideleg_idx() { cur_mideleg }
                     else if ex_csr_addr == call csr_mie_idx() { cur_mie }
-                    else if ex_csr_addr == call csr_mip_idx() { cur_mip | *ext_mip_q }
+                    else if ex_csr_addr == call csr_mip_idx() { cur_mip | *ext_mip_q | timer_mip }
                     else if ex_csr_addr == call csr_mstatus_idx() { cur_csr.mstatus }
                     else if ex_csr_addr == call csr_mtvec_idx() { cur_csr.mtvec }
                     else if ex_csr_addr == call csr_mscratch_idx() { cur_csr.mscratch }
@@ -599,9 +780,13 @@ proc pipeline_core() {
                     else if ex_csr_addr == call csr_minstret_idx() { cur_csr.minstret }
                     else if ex_csr_addr == call csr_mhartid_idx() { cur_csr.mhartid }
                     else if ex_csr_addr == call csr_mcounteren_idx() { <(64'hffffffff)::xlen_t> }
-                    else if ex_csr_addr == call csr_time_idx() { cur_csr.mcycle }
+                    else if ex_csr_addr == call csr_time_idx() { cur_mtime }
                     else if ex_csr_addr == call csr_stimecmp_idx() { cur_stimecmp }
                     else if ex_csr_addr == call csr_menvcfg_idx() { <(64'd0)::xlen_t> }
+                    else if ex_csr_addr == call csr_cap_ceh_idx() { cur_cap_ceh }
+                    else if ex_csr_addr == call csr_cap_cinit_idx() { cur_cap_cinit }
+                    else if ex_csr_addr == call csr_cap_epc_idx() { cur_cap_epc }
+                    else if ex_csr_addr == call csr_cap_switch_cap_idx() { cur_cap_switch_cap }
                     else { <(64'd0)::xlen_t> }
                 } else {
                     <(64'd0)::xlen_t>
@@ -625,6 +810,8 @@ proc pipeline_core() {
                 if cur_id_ex.ctrl.is_system == 1'b1 &&
                    call is_csr_instr(cur_id_ex.instr) == 1'b1 {
                     ex_csr_rdata
+                } else if cur_div_done == 1'b1 && cur_div_op_in_ex == 1'b1 {
+                    div_result
                 } else {
                     alu_res.result
                 } >>
@@ -707,13 +894,11 @@ proc pipeline_core() {
                     rd = call rd_of(cur_if_id.fetched.instr);
                     rs1_val = dec_rs1_raw;
                     rs2_val = dec_rs2_raw;
-                    cap_rs1_val = call zero_cap(); // TODO: replace with make_cap once elaborator limits are resolved
-                    cap_rs2_val = call zero_cap(); // TODO: replace with make_cap once elaborator limits are resolved
                     imm = call decode_imm(cur_if_id.fetched.instr);
                     predicted_taken = cur_if_id.predicted_taken;
                     predicted_target = cur_if_id.predicted_target;
                     cap_target_reg = call rd_of(cur_if_id.fetched.instr);
-                    cap_result = cur_if_id.cap_result;
+                    cap_result = call zero_cap();
                     ctrl = dec_ctrl.ctrl;
                     exc = dec_exc
                 } >>
@@ -805,8 +990,6 @@ proc pipeline_core() {
                         fetched = fetch_pkt_t::{pc = cur_pc; instr = fetch_instr};
                         predicted_taken = 1'b0;
                         predicted_target = cur_pc + <(64'd4)::xlen_t>;
-                        cap_target_reg = <(5'd0)::reg_idx_t>;
-                        cap_result = call zero_cap();
                         exc = fetch_exc
                     }
                 } >>
@@ -830,6 +1013,15 @@ proc pipeline_core() {
                 (call is_sfence_vma_instr(cur_mem_wb.instr) == 1'b1 ||
                  (cur_mem_wb.csr_we == 1'b1 && cur_mem_wb.csr_addr == call csr_satp_idx())) >>
             let next_redirect_hold = 1'b0 >>
+            let next_mtime_div =
+                if *mtime_div_q == 7'd99 { 7'd0 } else { *mtime_div_q + 7'd1 } >>
+            let next_mtime =
+                if clint_mtime_store_now == 1'b1 { store_masked }
+                else if *mtime_div_q == 7'd99 { cur_mtime + <(64'd1)::xlen_t> }
+                else { cur_mtime } >>
+            let next_mtimecmp =
+                if clint_mtimecmp_store_now == 1'b1 { store_masked }
+                else { cur_mtimecmp } >>
             {
                 set sim_exit_valid_q := next_sim_exit_valid;
                 set sim_exit_code_q := next_sim_exit_code;
@@ -857,6 +1049,13 @@ proc pipeline_core() {
                 set stval_q     := next_stval;
                 set satp_q      := next_satp;
                 set stimecmp_q  := next_stimecmp;
+                set mtime_q     := next_mtime;
+                set mtimecmp_q  := next_mtimecmp;
+                set mtime_div_q := next_mtime_div;
+                set cap_ceh_q        := next_cap_ceh;
+                set cap_cinit_q      := next_cap_cinit;
+                set cap_epc_q        := next_cap_epc;
+                set cap_switch_cap_q := next_cap_switch_cap;
                 set mem_wb_q := next_mem_wb;
                 set ex_mem_q := next_ex_mem;
                 set id_ex_q := next_id_ex;
@@ -868,6 +1067,34 @@ proc pipeline_core() {
                 set mem_store_addr_q  := if any_store_now == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
                 set mem_store_word_q  := if any_store_now == 1'b1 { store_masked } else { <(64'd0)::xlen_t> };
                 set ex_alu_result_q   := next_ex_mem.alu_result;
+                set div_busy_q :=
+                    if div_start_now == 1'b1 { 1'b1 }
+                    else if cur_div_done == 1'b1 && sv39_pipeline_stall == 1'b0 { 1'b0 }
+                    else { *div_busy_q };
+                set div_count_q :=
+                    if div_start_now == 1'b1 {
+                        if div_eff_b == <(64'd0)::xlen_t> { 7'd64 } else { 7'd0 }
+                    } else if *div_busy_q == 1'b1 && cur_div_done == 1'b0 {
+                        *div_count_q + 7'd1
+                    } else {
+                        *div_count_q
+                    };
+                set div_q_q :=
+                    if div_start_now == 1'b1 { div_abs_a }
+                    else if *div_busy_q == 1'b1 && cur_div_done == 1'b0 { div_step_q }
+                    else { *div_q_q };
+                set div_r_q :=
+                    if div_start_now == 1'b1 { <(64'd0)::xlen_t> }
+                    else if *div_busy_q == 1'b1 && cur_div_done == 1'b0 { div_step_r }
+                    else { *div_r_q };
+                set div_b_q := if div_start_now == 1'b1 { div_abs_b } else { *div_b_q };
+                set div_orig_a_q := if div_start_now == 1'b1 { div_eff_a } else { *div_orig_a_q };
+                set div_lhs_neg_q := if div_start_now == 1'b1 { div_eff_a[63] } else { *div_lhs_neg_q };
+                set div_rhs_neg_q := if div_start_now == 1'b1 { div_eff_b[63] } else { *div_rhs_neg_q };
+                set div_signed_q := if div_start_now == 1'b1 { div_is_signed } else { *div_signed_q };
+                set div_rem_q := if div_start_now == 1'b1 { div_is_rem } else { *div_rem_q };
+                set div_word_q := if div_start_now == 1'b1 { div_is_word } else { *div_word_q };
+                set div_dbz_q := if div_start_now == 1'b1 { div_eff_b == <(64'd0)::xlen_t> } else { *div_dbz_q };
                 cycle 1
             }
         }

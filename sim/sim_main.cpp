@@ -2,7 +2,7 @@
 // sim_main.cpp — Verilator harness for the RISCy pipeline_core
 //
 // Usage:
-//   Vpipeline_core <program.elf> [cycle_limit] [--disk <fs.img>] [--trace]
+//   Vpipeline_core <program.elf> [cycle_limit] [--disk <fs.img>] [--trace] [--verbose]
 //
 // Memory model
 // ───────────
@@ -18,7 +18,7 @@
 //
 // MMIO device models
 // ──────────────────
-//   CLINT  0x02000000 – 0x02FFFFFF   mtime, mtimecmp
+//   CLINT  0x02000000 - 0x02FFFFFF   read/write shim for RTL mtime/mtimecmp
 //   PLIC   0x0C000000 – 0x0FFFFFFF   claim/complete, priority
 //   UART   0x10000000 – 0x1FFFFFFF   NS16550A TX/RX registers
 //   virtio 0x10001000 – 0x10001FFF   virtio-blk for disk I/O
@@ -35,18 +35,15 @@
 //
 // Interrupt injection
 // ───────────────────
-//   ext_mip_q is driven every cycle from sim_mtime / sim_mtimecmp state.
-//   When sim_mtime >= sim_mtimecmp, MTIP (bit 7) is raised; when the UART TX
-//   IRQ fires, SEIP (bit 9) is raised.  The RTL ORs ext_mip_q with mip_q to
-//   form the effective pending interrupt mask.
+//   MTIP/STIP are generated inside the Anvil RTL from mtime/mtimecmp/stimecmp.
+//   The harness only drives external device pending state through ext_mip_q.
+//   When UART or virtio requires service, SEIP (bit 9) is raised.
 //
-// Division / remainder (software interception)
-// ─────────────────────────────────────────────
-//   Rather than implement a hardware divider in Anvil (which requires an
-//   iterative multi-cycle FSM), DIV/DIVU/REM/REMU and their W variants are
-//   intercepted in the harness.  When the pipeline reaches a DIV-family
-//   instruction in the EX stage, the harness performs the division in C++
-//   and writes the result back into the EX/MEM ALU result register.
+// Division / remainder
+// ────────────────────
+//   DIV/DIVU/REM/REMU and their W variants are implemented by an iterative
+//   RTL divider in pipeline_core.  The older harness interception helpers are
+//   kept below only as debug reference code and are not called.
 // ============================================================
 
 #include <algorithm>
@@ -67,9 +64,9 @@
 
 double sc_time_stamp() { return 0; }
 
-// CLINT simulation state.
+// Harness timebase for UART/virtio scheduling only. Architectural mtime and
+// mtimecmp live in the RTL.
 static std::uint64_t sim_mtime = 0;
-static std::uint64_t sim_mtimecmp = UINT64_MAX;
 
 // SIE masking: when in S-mode with sstatus.SIE=0, suppress delegated interrupts
 // so the RTL (which lacks the SIE check) doesn't fire them incorrectly.
@@ -97,6 +94,7 @@ static std::uint32_t virtio_interrupt_status = 0;
 static bool uart_tx_irq_pending = false;
 static std::uint64_t uart_tx_irq_fire_at = UINT64_MAX;  // cycle at which to set pending
 static constexpr std::uint64_t UART_TX_IRQ_DELAY = 50;
+static bool verbose_logs = false;
 
 static constexpr std::uint64_t VIRTIO_BASE = 0x10001000ULL;
 static constexpr std::uint64_t BUF_DATA_OFFSET = 0x58;  // offsetof(buf, data)
@@ -150,9 +148,11 @@ static void hmem_w32(std::uint64_t pa, std::uint32_t val) {
 // Process all new virtio-blk requests queued since last QUEUE_NOTIFY.
 // I/O is synchronous: writes b->disk=0 directly so the pipeline loop exits.
 static void process_virtio_queue_notify() {
-    std::fprintf(stderr, "[VIRT-NOTIFY] vq_desc_pa=0x%llx vq_avail_pa=0x%llx vq_used_pa=0x%llx disk_sz=%zu\n",
-        (unsigned long long)vq_desc_pa, (unsigned long long)vq_avail_pa,
-        (unsigned long long)vq_used_pa, vdisk_img.size());
+    if (verbose_logs) {
+        std::fprintf(stderr, "[VIRT-NOTIFY] vq_desc_pa=0x%llx vq_avail_pa=0x%llx vq_used_pa=0x%llx disk_sz=%zu\n",
+            (unsigned long long)vq_desc_pa, (unsigned long long)vq_avail_pa,
+            (unsigned long long)vq_used_pa, vdisk_img.size());
+    }
     if (vdisk_img.empty() || vq_desc_pa == 0 || vq_avail_pa == 0) return;
 
     // avail ring: { uint16 flags; uint16 idx; uint16 ring[8]; }
@@ -230,6 +230,10 @@ bool is_number_arg(const char* arg) {
 
 bool is_trace_arg(const char* arg) {
     return arg != nullptr && std::string(arg) == "--trace";
+}
+
+bool is_verbose_arg(const char* arg) {
+    return arg != nullptr && std::string(arg) == "--verbose";
 }
 
 void half_tick(VerilatedContext& context, Vtop& top, bool rst_n) {
@@ -694,7 +698,7 @@ static bool is_mmio_addr_cpp(std::uint64_t addr) {
 
 static void dispatch_mmio_store(std::uint64_t addr, std::uint64_t data) {
     if (addr >= 0x2004000ULL && addr < 0x2004008ULL) {
-        sim_mtimecmp = data;
+        // mtimecmp is captured by RTL from mem_store_*_q.
     } else if (addr >= 0x2000000ULL && addr < 0x2000008ULL) {
         // MSIP — no-op
     } else if ((addr & ~0xFFFULL) == VIRTIO_BASE) {
@@ -721,9 +725,11 @@ static void dispatch_mmio_store(std::uint64_t addr, std::uint64_t data) {
         const unsigned uart_reg = static_cast<unsigned>(addr & 0xFu);
         // Extract byte from the correct lane in the lane-shifted store word.
         const unsigned byte_val = static_cast<unsigned>((data >> (uart_reg * 8u)) & 0xFFu);
-        std::fprintf(stderr, "[UART-TX cyc=%llu] reg=%u byte=0x%02x '%c'\n",
-                     (unsigned long long)sim_mtime, uart_reg, byte_val,
-                     (byte_val >= 32u && byte_val < 127u) ? (char)byte_val : '.');
+        if (verbose_logs) {
+            std::fprintf(stderr, "[UART-TX cyc=%llu] reg=%u byte=0x%02x '%c'\n",
+                         (unsigned long long)sim_mtime, uart_reg, byte_val,
+                         (byte_val >= 32u && byte_val < 127u) ? (char)byte_val : '.');
+        }
         if (uart_reg == 0) {
             std::putchar(static_cast<unsigned char>(byte_val));
             std::fflush(stdout);
@@ -739,7 +745,7 @@ static void commit_stores(Vtop___024root* rootp) {
     const std::uint64_t addr = rootp->pipeline_core__DOT__mem_store_addr_q_q;
     const std::uint64_t data = rootp->pipeline_core__DOT__mem_store_word_q_q;
     // Debug window: log all stores around the write() syscall area
-    if (sim_mtime >= 214200 && sim_mtime <= 214500) {
+    if (verbose_logs && sim_mtime >= 214200 && sim_mtime <= 214500) {
         std::fprintf(stderr, "[STORE-DBG cyc=%llu] addr=0x%llx data=0x%llx mmio=%d\n",
             (unsigned long long)sim_mtime, (unsigned long long)addr,
             (unsigned long long)data, (int)is_mmio_addr_cpp(addr));
@@ -774,8 +780,10 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
     std::uint64_t data = 0;
     if (is_mmio_addr_cpp(pa)) {
         if ((pa >> 24) == 2u) {
-            if ((pa & ~7ull) == 0x200BFF8ULL)  data = sim_mtime;
-            else if ((pa & ~7ull) == 0x2004000ULL) data = sim_mtimecmp;
+            if ((pa & ~7ull) == 0x200BFF8ULL)
+                data = rootp->pipeline_core__DOT__mtime_q_q;
+            else if ((pa & ~7ull) == 0x2004000ULL)
+                data = rootp->pipeline_core__DOT__mtimecmp_q_q;
         } else if ((pa & ~0xFFFULL) == VIRTIO_BASE) {
             // Virtio-blk MMIO register reads (byte-lane-aligned)
             const std::uint32_t reg = static_cast<std::uint32_t>(pa - VIRTIO_BASE);
@@ -802,7 +810,7 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
             if ((pa & 0xFu) == 5u) uart_byte = 0x60u;  // LSR: THRE+TEMT set
             data = static_cast<std::uint64_t>(uart_byte) << (byte_off * 8u);
             // Log LSR reads so we can trace uartstart().
-            if ((pa & 0xFu) == 5u)
+            if (verbose_logs && (pa & 0xFu) == 5u)
                 std::fprintf(stderr, "[UART-LSR cyc=%llu] pa=0x%llx data=0x%llx\n",
                     (unsigned long long)sim_mtime, (unsigned long long)pa, (unsigned long long)data);
         } else if ((pa >> 26) == 3u) {
@@ -933,231 +941,13 @@ static void pre_populate_imem_rdata(Vtop___024root* rootp) {
     rootp->pipeline_core__DOT__imem_rdata_q_q = instr;
 }
 
-// ============================================================
-// Division/Remainder harness interception
-//
-// The Anvil ALU stubs produce wrong results for div/rem.
-// The harness intercepts by computing the correct result in C++
-// and patching ex_mem_q_q before the next tick (so forwarding
-// also sees the right value) and mem_wb_q_q before WB commits.
-//
-// Bit layout (confirmed from Verilator-generated code):
-//   ctrl.alu_op (5 bits) is at packet bits [95:91] in every packet
-//     → word[2] bits [31:27]: (pkt[2] >> 27) & 0x1f
-//   id_ex rs1_val (64 bits) at bits [1171:1108], words [34-36]
-//   id_ex rs2_val (64 bits) at bits [1107:1044], words [32-34]
-//   ex_mem alu_result (64 bits) at bits [642:579], words [18-20]
-//   mem_wb alu_result (64 bits) at bits [577:514], words [16-18]
-//   id_ex  valid bit at bit 1283 = word[40] bit 3
-//   ex_mem valid bit at bit 744  = word[23] bit 8
-//   mem_wb valid bit at bit 679  = word[21] bit 7
-// ============================================================
-
-static const std::uint32_t ALU_DIV   = 22u;
-static const std::uint32_t ALU_DIVU  = 23u;
-static const std::uint32_t ALU_REM   = 24u;
-static const std::uint32_t ALU_REMU  = 25u;
-static const std::uint32_t ALU_DIVW  = 26u;
-static const std::uint32_t ALU_DIVUW = 27u;
-static const std::uint32_t ALU_REMW  = 28u;
-static const std::uint32_t ALU_REMUW = 29u;
-
-static bool         pending_div_active = false;
-static std::uint64_t pending_div_result = 0;
-
-static bool is_div_op(std::uint32_t op) {
-    return op >= ALU_DIV && op <= ALU_REMUW;
-}
-
-// RISC-V integer division per spec (divide-by-zero and overflow defined).
-static std::uint64_t cpp_div64(std::uint32_t alu_op, std::uint64_t lhs, std::uint64_t rhs) {
-    const bool is_signed = (alu_op == ALU_DIV  || alu_op == ALU_REM  ||
-                            alu_op == ALU_DIVW || alu_op == ALU_REMW);
-    const bool is_word   = (alu_op == ALU_DIVW  || alu_op == ALU_DIVUW ||
-                            alu_op == ALU_REMW  || alu_op == ALU_REMUW);
-    const bool is_rem    = (alu_op == ALU_REM   || alu_op == ALU_REMU  ||
-                            alu_op == ALU_REMW  || alu_op == ALU_REMUW);
-
-    std::uint64_t a = lhs, b = rhs;
-    if (is_word) {
-        if (is_signed) {
-            a = static_cast<std::uint64_t>(static_cast<std::int64_t>(
-                    static_cast<std::int32_t>(static_cast<std::uint32_t>(lhs))));
-            b = static_cast<std::uint64_t>(static_cast<std::int64_t>(
-                    static_cast<std::int32_t>(static_cast<std::uint32_t>(rhs))));
-        } else {
-            a = static_cast<std::uint32_t>(lhs);
-            b = static_cast<std::uint32_t>(rhs);
-        }
-    }
-
-    std::uint64_t result;
-    if (b == 0u) {
-        result = is_rem ? a : UINT64_MAX;
-    } else if (is_signed) {
-        const std::int64_t sa = static_cast<std::int64_t>(a);
-        const std::int64_t sb = static_cast<std::int64_t>(b);
-        if (sa == INT64_MIN && sb == -1) {
-            result = is_rem ? 0u : static_cast<std::uint64_t>(INT64_MIN);
-        } else {
-            result = is_rem ? static_cast<std::uint64_t>(sa % sb)
-                            : static_cast<std::uint64_t>(sa / sb);
-        }
-    } else {
-        result = is_rem ? (a % b) : (a / b);
-    }
-
-    if (is_word)
-        result = static_cast<std::uint64_t>(static_cast<std::int64_t>(
-                     static_cast<std::int32_t>(static_cast<std::uint32_t>(result))));
-    return result;
-}
-
-static std::uint32_t read_pkt_alu_op(const std::uint32_t* pkt) {
-    return (pkt[2u] >> 27u) & 0x1fu;
-}
-
-// Raw (pre-forwarding) register values from id_ex packet.
-// Forwarding is applied separately in capture_div_from_id_ex.
-static std::uint64_t read_id_ex_rs1_val_raw(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
-    return (static_cast<std::uint64_t>(p[34u] >> 20u)) |
-           (static_cast<std::uint64_t>(p[35u]) << 12u) |
-           (static_cast<std::uint64_t>(p[36u] & 0xFFFFFu) << 44u);
-}
-
-static std::uint64_t read_id_ex_rs2_val_raw(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
-    return (static_cast<std::uint64_t>(p[32u] >> 20u)) |
-           (static_cast<std::uint64_t>(p[33u]) << 12u) |
-           (static_cast<std::uint64_t>(p[34u] & 0xFFFFFu) << 44u);
-}
-
-// Register indices for rs1/rs2 in id_ex packet.
-// rs2 at packet bits [1181:1177] = word[36] bits [29:25]
-// rs1 at packet bits [1186:1182] = word[36] bits [31:30] + word[37] bits [2:0]
-static std::uint32_t read_id_ex_rs1_idx(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
-    return ((p[36u] >> 30u) & 0x3u) | ((p[37u] & 0x7u) << 2u);
-}
-static std::uint32_t read_id_ex_rs2_idx(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
-    return (p[36u] >> 25u) & 0x1fu;
-}
-
-// Read alu_result from ex_mem packet (bits [642:579], words [18-20]).
-static std::uint64_t read_ex_mem_alu_result(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__ex_mem_q_q[0u];
-    return (static_cast<std::uint64_t>(p[18u] >> 3u)) |
-           (static_cast<std::uint64_t>(p[19u]) << 29u) |
-           (static_cast<std::uint64_t>(p[20u] & 0x7u) << 61u);
-}
-
-// rd from ex_mem packet (bits [647:643], word[20] bits [7:3]).
-static std::uint32_t read_ex_mem_rd(const Vtop___024root* rootp) {
-    return (rootp->pipeline_core__DOT__ex_mem_q_q[20u] >> 3u) & 0x1fu;
-}
-
-// Read alu_result from mem_wb packet (bits [577:514], words [16-18]).
-static std::uint64_t read_mem_wb_alu_result_raw(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
-    return (static_cast<std::uint64_t>(p[16u] >> 2u)) |
-           (static_cast<std::uint64_t>(p[17u]) << 30u) |
-           (static_cast<std::uint64_t>(p[18u] & 0x3u) << 62u);
-}
-
-// mem_data from mem_wb packet (bits [513:450], words [14-16]).
-static std::uint64_t read_mem_wb_mem_data(const Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
-    return (static_cast<std::uint64_t>(p[14u] >> 2u)) |
-           (static_cast<std::uint64_t>(p[15u]) << 30u) |
-           (static_cast<std::uint64_t>(p[16u] & 0x3u) << 62u);
-}
-
-// rd from mem_wb packet (bits [582:578], word[18] bits [6:2]).
-static std::uint32_t read_mem_wb_rd(const Vtop___024root* rootp) {
-    return (rootp->pipeline_core__DOT__mem_wb_q_q[18u] >> 2u) & 0x1fu;
-}
-
-// wb_sel from mem_wb ctrl (ctrl.wb_sel at ctrl bits [11:10] = packet bits [81:80]).
-// WB_MEM = 2 means use mem_data for writeback.
-static std::uint32_t read_mem_wb_wb_sel(const Vtop___024root* rootp) {
-    return (rootp->pipeline_core__DOT__mem_wb_q_q[2u] >> 16u) & 0x3u;
-}
-
-// Forwarded writeback value from mem_wb (alu_result or mem_data depending on wb_sel).
-static std::uint64_t read_mem_wb_fwd_val(const Vtop___024root* rootp) {
-    return (read_mem_wb_wb_sel(rootp) == 2u)
-        ? read_mem_wb_mem_data(rootp)
-        : read_mem_wb_alu_result_raw(rootp);
-}
-
-// Apply forwarding: given a register index and raw value from id_ex, return the
-// correct operand value (forwarded from ex_mem or mem_wb if there is a match).
-static std::uint64_t apply_forwarding(const Vtop___024root* rootp,
-                                       std::uint32_t reg_idx,
-                                       std::uint64_t raw_val) {
-    if (reg_idx == 0u) return 0u;  // x0 always 0
-    // EX/MEM forwarding (higher priority — more recent)
-    if ((rootp->pipeline_core__DOT__ex_mem_q_q[23u] >> 8u) & 1u) {
-        if (read_ex_mem_rd(rootp) == reg_idx)
-            return read_ex_mem_alu_result(rootp);
-    }
-    // MEM/WB forwarding
-    if ((rootp->pipeline_core__DOT__mem_wb_q_q[21u] >> 7u) & 1u) {
-        if (read_mem_wb_rd(rootp) == reg_idx)
-            return read_mem_wb_fwd_val(rootp);
-    }
-    return raw_val;
-}
-
-static void write_ex_mem_alu_result(Vtop___024root* rootp, std::uint64_t val) {
-    auto* p = &rootp->pipeline_core__DOT__ex_mem_q_q[0u];
-    p[18u] = (p[18u] & 0x7u) | (static_cast<std::uint32_t>(val) << 3u);
-    p[19u] = static_cast<std::uint32_t>(val >> 29u);
-    p[20u] = (p[20u] & ~0x7u) | static_cast<std::uint32_t>((val >> 61u) & 0x7u);
-}
-
+// Patch the ALU-result field in MEM/WB. This remains for simulation-only
+// capability CSR/register emulation; DIV/REM no longer uses harness patches.
 static void write_mem_wb_alu_result(Vtop___024root* rootp, std::uint64_t val) {
     auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
     p[16u] = (p[16u] & 0x3u) | (static_cast<std::uint32_t>(val) << 2u);
     p[17u] = static_cast<std::uint32_t>(val >> 30u);
     p[18u] = (p[18u] & ~0x3u) | static_cast<std::uint32_t>((val >> 62u) & 0x3u);
-}
-
-// Called BEFORE each tick: check id_ex for div/rem, compute correct result.
-// Applies forwarding to get the true operand values (id_ex stores raw regfile
-// values; the actual EX-stage operands come from forwarding paths).
-static void capture_div_from_id_ex(Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
-    if (!((p[40u] >> 3u) & 1u)) return;  // id_ex not valid
-    const std::uint32_t alu_op = read_pkt_alu_op(p);
-    if (!is_div_op(alu_op)) return;
-    const std::uint32_t rs1_idx = read_id_ex_rs1_idx(rootp);
-    const std::uint32_t rs2_idx = read_id_ex_rs2_idx(rootp);
-    const std::uint64_t rs1 = apply_forwarding(rootp, rs1_idx, read_id_ex_rs1_val_raw(rootp));
-    const std::uint64_t rs2 = apply_forwarding(rootp, rs2_idx, read_id_ex_rs2_val_raw(rootp));
-    pending_div_result = cpp_div64(alu_op, rs1, rs2);
-    pending_div_active = true;
-}
-
-// Called BEFORE each tick: patch alu_result in ex_mem/mem_wb if a pending div result exists.
-static void patch_div_results(Vtop___024root* rootp) {
-    if (!pending_div_active) return;
-
-    const auto* em = &rootp->pipeline_core__DOT__ex_mem_q_q[0u];
-    if ((em[23u] >> 8u) & 1u) {  // ex_mem valid
-        if (is_div_op(read_pkt_alu_op(em)))
-            write_ex_mem_alu_result(rootp, pending_div_result);
-    }
-
-    const auto* wb = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
-    if ((wb[21u] >> 7u) & 1u) {  // mem_wb valid
-        if (is_div_op(read_pkt_alu_op(wb))) {
-            write_mem_wb_alu_result(rootp, pending_div_result);
-            pending_div_active = false;
-        }
-    }
 }
 
 // Capability register file lives in the harness: capability_t[32] inside pipeline_core.anvil
@@ -1404,71 +1194,13 @@ static CapabilityT cpp_cap_alu_exec(uint32_t op,
     return cap_a;
 }
 
-// Capstone custom CSRs: 0xBC0=ceh, 0xBC1=cinit, 0xBC2=epc, 0xBC3=switch_cap.
-// These are not in csr_is_supported(), so the RTL raises cause=2 for any access.
-// commit_ccsr_wb() cancels that trap pre-tick and emulates the read/write here.
-static uint64_t ccsr[4] = {0, 0, 0, 0};
-
-// Pre-tick: intercept CSRRW/CSRRS/CSRRC targeting 0xBC0–0xBC3.
-// Clears has_exc (bit 70 of mem_wb_q_q) to cancel the illegal-instruction trap,
-// recomputes new_val from the real ccsr[] state (the RTL used ex_csr_rdata=0),
-// and patches alu_result so rd gets the old CSR value.
-static void commit_ccsr_wb(Vtop___024root* rootp) {
-    const auto* p = &rootp->pipeline_core__DOT__mem_wb_q_q[0u];
-    if (!((p[21u] >> 7u) & 1u)) return;    // valid (bit 679)
-    if (!((p[2u] >> 6u) & 1u)) return;     // has_exc (bit 70)
-    if (((p[2u]) & 0x3fu) != 2u) return;   // cause != 2 (illegal instruction)
-
-    const uint32_t instr = (p[18u] >> 7u) | ((p[19u] & 0x7fu) << 25u);
-    if ((instr & 0x7fu) != 0x73u) return;  // not system opcode
-    const uint32_t funct3 = (instr >> 12u) & 7u;
-    if (funct3 == 0u) return;              // ECALL/EBREAK family, not a CSR op
-
-    const uint32_t csr_addr_val = (instr >> 20u) & 0xFFFu;
-    if (csr_addr_val < 0xBC0u || csr_addr_val > 0xBC3u) return;
-
-    const uint32_t idx     = csr_addr_val - 0xBC0u;
-    const uint64_t old_val = ccsr[idx];
-    const uint32_t rs1_field = (instr >> 15u) & 0x1fu;
-    // zimm for CSRRWI/CSRRSI/CSRRCI (funct3 >= 5), otherwise rs1 value
-    const uint64_t write_src = (funct3 >= 5u)
-        ? static_cast<uint64_t>(rs1_field)
-        : read_gpr(rootp, rs1_field);
-    // CSRRW always writes; CSRRS/CSRRC only write if rs1 != 0
-    const bool writes = (funct3 == 1u || funct3 == 5u) || (rs1_field != 0u);
-
-    if (writes) {
-        uint64_t new_val;
-        if      (funct3 == 1u || funct3 == 5u) new_val = write_src;
-        else if (funct3 == 2u || funct3 == 6u) new_val = old_val | write_src;
-        else                                    new_val = old_val & ~write_src;
-        ccsr[idx] = new_val;
-        std::fprintf(stderr,
-            "[CCSR-WB cyc=%llu] instr=0x%08x %s 0x%x old=0x%llx new=0x%llx\n",
-            (unsigned long long)read_mcycle(rootp), instr,
-            (funct3==1||funct3==5) ? "CSRRW" : "CSRRS/CSRRC",
-            csr_addr_val, (unsigned long long)old_val, (unsigned long long)new_val);
-    }
-
-    // Cancel the trap and deliver the old value to rd.
-    rootp->pipeline_core__DOT__mem_wb_q_q[2u] &= ~(1u << 6u);  // clear has_exc
-    const uint32_t rd = (instr >> 7u) & 0x1fu;
-    if (rd != 0u) {
-        write_mem_wb_alu_result(rootp, old_val);
-        std::fprintf(stderr,
-            "[CCSR-RD cyc=%llu] 0xBC%x old=0x%llx → rd=x%u\n",
-            (unsigned long long)read_mcycle(rootp), idx,
-            (unsigned long long)old_val, rd);
-    }
-}
-
 // Squash the three younger pipeline stages (EX/MEM, ID/EX, IF/ID) and
 // redirect the fetch PC.  Called after CJALR, CALL, or RETURN retires so
 // that the speculative instructions behind them are discarded.
 static void cap_flush_and_redirect(Vtop___024root* rootp, uint64_t target_pc) {
     rootp->pipeline_core__DOT__ex_mem_q_q[23u] &= ~(1u << 8u);  // ex_mem valid
-    rootp->pipeline_core__DOT__id_ex_q_q[0x22u] &= ~1u;          // id_ex valid
-    rootp->pipeline_core__DOT__if_id_q_q[0xdu]  &= ~(1u << 27u); // if_id valid
+    rootp->pipeline_core__DOT__id_ex_q_q[23u]    &= ~(1u << 5u);  // id_ex valid [741]
+    rootp->pipeline_core__DOT__if_id_q_q[7u]    &= ~(1u << 8u);  // if_id valid [232]
     rootp->pipeline_core__DOT__pc_q_q = target_pc;
     std::fprintf(stderr,
         "[CAP-REDIRECT cyc=%llu] pc → 0x%llx\n",
@@ -1634,31 +1366,12 @@ static void commit_cap_wb(Vtop___024root* rootp) {
     }
 }
 
-// Drive ext_mip_q: MTIP (bit 7) from CLINT mtimecmp, STIP (bit 5) from stimecmp_q_q.
-// Magic-address legacy mtimecmp kept for ISA tests that use it.
-//
-// sim_mtime advances every 100 CPU cycles (100:1 ratio) so that xv6's
-// stimecmp = rdtime + 1_000_000 corresponds to ~100M CPU cycles, giving the
-// kernel enough time to reach trapinithart() and install stvec before STIP fires.
+// Drive ext_mip_q for external device interrupt sources only. The RTL advances
+// architectural mtime every 100 CPU cycles and generates MTIP/STIP internally.
 void update_ext_mip(Vtop___024root* rootp) {
     static unsigned slow_count = 0;
     if (++slow_count >= 100) { slow_count = 0; ++sim_mtime; }
-    if (sim_mtimecmp == UINT64_MAX) {
-        const std::uint64_t magic_addr = 0x80001FF0ULL;
-        if (magic_addr >= RAM_BASE && magic_addr + 8u <= RAM_BASE + RAM_SIZE) {
-            const std::uint32_t local = static_cast<std::uint32_t>(magic_addr - RAM_BASE);
-            std::uint64_t delay = 0;
-            for (int i = 0; i < 8; ++i)
-                delay |= static_cast<std::uint64_t>(host_mem[local + i]) << (i * 8u);
-            if (delay != 0) sim_mtimecmp = sim_mtime + delay;
-        }
-    }
-    const bool mtip = (sim_mtime >= sim_mtimecmp);
-    const std::uint64_t stimecmp_val = rootp->pipeline_core__DOT__stimecmp_q_q;
-    const bool stip = (stimecmp_val != 0) && (sim_mtime >= stimecmp_val);
     std::uint64_t ext_mip = 0;
-    if (mtip) ext_mip |= (1ULL << 7);
-    if (stip) ext_mip |= (1ULL << 5);
     // Promote delayed UART TX interrupt once the fire_at cycle has been reached.
     if (!uart_tx_irq_pending && uart_tx_irq_fire_at != UINT64_MAX && sim_mtime >= uart_tx_irq_fire_at) {
         uart_tx_irq_pending = true;
@@ -1736,26 +1449,34 @@ std::uint64_t program_exit_code(const Vtop___024root* rootp) {
 }
 
 bool read_if_valid(const Vtop___024root* rootp) {
-    return ((rootp->pipeline_core__DOT__if_id_q_q[0xd] >> 27u) & 0x1u) != 0u;
+    // if_id_pkt_t is 233 bits; valid at [232] = word[7] bit 8
+    return ((rootp->pipeline_core__DOT__if_id_q_q[7u] >> 8u) & 0x1u) != 0u;
 }
 
 std::uint64_t read_if_pc(const Vtop___024root* rootp) {
-    return (static_cast<std::uint64_t>(rootp->pipeline_core__DOT__if_id_q_q[0xd]) << 37u) |
-           (static_cast<std::uint64_t>(rootp->pipeline_core__DOT__if_id_q_q[0xc]) << 5u) |
-           (static_cast<std::uint64_t>(rootp->pipeline_core__DOT__if_id_q_q[0xb]) >> 27u);
+    // fetched.pc at [231:168]: word[5][31:8] | word[6][31:0] | word[7][7:0]
+    const auto* p = &rootp->pipeline_core__DOT__if_id_q_q[0u];
+    return (static_cast<std::uint64_t>(p[5u] >> 8u)) |
+           (static_cast<std::uint64_t>(p[6u]) << 24u) |
+           (static_cast<std::uint64_t>(p[7u] & 0xffu) << 56u);
 }
 
 bool read_id_valid(const Vtop___024root* rootp) {
-    return (rootp->pipeline_core__DOT__id_ex_q_q[0x22] & 0x1u) != 0u;
+    // id_ex_pkt_t is 742 bits; valid at [741] = word[23] bit 5
+    return ((rootp->pipeline_core__DOT__id_ex_q_q[23u] >> 5u) & 0x1u) != 0u;
 }
 
 std::uint64_t read_id_pc(const Vtop___024root* rootp) {
-    return static_cast<std::uint64_t>(rootp->pipeline_core__DOT__id_ex_q_q[0x20]) |
-           (static_cast<std::uint64_t>(rootp->pipeline_core__DOT__id_ex_q_q[0x21]) << 32u);
+    // pc at [740:677]: word[21][31:5] | word[22][31:0] | word[23][4:0]
+    const auto* p = &rootp->pipeline_core__DOT__id_ex_q_q[0u];
+    return (static_cast<std::uint64_t>(p[21u] >> 5u)) |
+           (static_cast<std::uint64_t>(p[22u]) << 27u) |
+           (static_cast<std::uint64_t>(p[23u] & 0x1fu) << 59u);
 }
 
 std::uint64_t read_id_rd(const Vtop___024root* rootp) {
-    return static_cast<std::uint64_t>((rootp->pipeline_core__DOT__id_ex_q_q[0x1e] >> 17u) & 0x1fu);
+    // rd at [634:630] = word[19] bits [26:22]
+    return static_cast<std::uint64_t>((rootp->pipeline_core__DOT__id_ex_q_q[19u] >> 22u) & 0x1fu);
 }
 
 bool read_ex_valid(const Vtop___024root* rootp) {
@@ -1892,6 +1613,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (is_trace_arg(argv[i])) {
             trace_mode = true;
+        } else if (is_verbose_arg(argv[i])) {
+            verbose_logs = true;
         } else if (std::string(argv[i]) == "--disk" && i + 1 < argc) {
             disk_path = argv[++i];
         } else if (is_number_arg(argv[i])) {
@@ -1923,6 +1646,7 @@ int main(int argc, char** argv) {
     }
 
     std::ostream& summary = trace_mode ? std::cout : std::cerr;
+    if (trace_mode) verbose_logs = true;
 
     const std::unique_ptr<VerilatedContext> contextp{new VerilatedContext};
     contextp->debug(0);
@@ -1959,7 +1683,6 @@ int main(int argc, char** argv) {
     }
 
     cap_rf_reset();
-    for (int i = 0; i < 4; ++i) ccsr[i] = 0;
 
     if (!elf_path.empty()) {
         if (!load_elf(top->rootp, elf_path)) {
@@ -2004,10 +1727,7 @@ int main(int argc, char** argv) {
         update_ext_mip(top->rootp);
         apply_sie_masking(top->rootp);
         commit_stores(top->rootp);
-        commit_ccsr_wb(top->rootp);
         commit_cap_wb(top->rootp);
-        capture_div_from_id_ex(top->rootp);
-        patch_div_results(top->rootp);
         // Let the PTW complete naturally. The RTL gates int_fire via pipeline_stall,
         // so interrupts fire after the stall resolves without corrupting pipeline state.
         update_sv39(top->rootp);
@@ -2042,19 +1762,8 @@ int main(int argc, char** argv) {
             exec_ring_head   = (exec_ring_head + 1) % 512;
         }
 
-        // Harness-level workaround for pipeline interrupt delivery bug:
-        // When int_fire=1, the RTL does not bubble the EX-MEM packet (missing
-        // || int_fire condition in next_ex_mem). Detect interrupt by observing
-        // mcause/scause change with bit 63 set, then zero the EX-MEM valid bit
-        // so the stale ID→EX instruction doesn't commit at WB.
-        //
-        // Also fix interrupt cause encoding bug: the RTL's priority encoder
-        // uses `else { cause=11 }` as the fallback, so SEIP (bit 9 in ext_mip)
-        // fires with scause=0x800000000000000b (MEI) instead of
-        // 0x8000000000000009 (SEI). xv6's devintr() checks for cause=9, so
-        // patch scause to 9 whenever it would otherwise be 11 for an S-mode
-        // interrupt. We never set MEIP (bit 11) in ext_mip, so cause=11 for
-        // an S-mode trap is always a mislabeled SEIP.
+        // Defensive post-interrupt squash: if an interrupt changed mcause/scause,
+        // make sure no stale EX/MEM packet can retire behind the trap.
         {
             const std::uint64_t chk_mcause = read_mcause(top->rootp);
             const std::uint64_t chk_scause = top->rootp->pipeline_core__DOT__scause_q_q;
@@ -2062,11 +1771,6 @@ int main(int argc, char** argv) {
             const bool m_int_fired = ((chk_mcause != prev_mcause) && (chk_mcause >> 63u));
             if (s_int_fired || m_int_fired) {
                 top->rootp->pipeline_core__DOT__ex_mem_q_q[23u] &= ~(1u << 8u);
-            }
-            // Patch SEIP cause: RTL assigns cause=11 for any unrecognised
-            // pending interrupt (the else branch). Correct it to cause=9.
-            if (s_int_fired && chk_scause == 0x800000000000000bULL) {
-                top->rootp->pipeline_core__DOT__scause_q_q = 0x8000000000000009ULL;
             }
         }
 

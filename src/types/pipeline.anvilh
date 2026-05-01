@@ -106,8 +106,6 @@ struct if_id_pkt_t {
     fetched          : fetch_pkt_t,
     predicted_taken  : logic,
     predicted_target : xlen_t,
-    cap_target_reg   : reg_idx_t,
-    cap_result       : capability_t,
     exc              : exc_info_t
 }
 
@@ -122,8 +120,6 @@ struct id_ex_pkt_t {
     rd               : reg_idx_t,
     rs1_val          : xlen_t,
     rs2_val          : xlen_t,
-    cap_rs1_val : capability_t,
-    cap_rs2_val : capability_t,
     imm              : xlen_t,
     predicted_taken  : logic,
     predicted_target : xlen_t,
@@ -275,3 +271,7 @@ func csr_mcounteren_idx() { <(12'h306)::csr_idx_t> }
 func csr_time_idx()      { <(12'hc01)::csr_idx_t> }
 func csr_stimecmp_idx() { <(12'h14D)::csr_idx_t> }
 func csr_menvcfg_idx()  { <(12'h30A)::csr_idx_t> }
+func csr_cap_ceh_idx()        { <(12'hBC0)::csr_idx_t> }
+func csr_cap_cinit_idx()      { <(12'hBC1)::csr_idx_t> }
+func csr_cap_epc_idx()        { <(12'hBC2)::csr_idx_t> }
+func csr_cap_switch_cap_idx() { <(12'hBC3)::csr_idx_t> }

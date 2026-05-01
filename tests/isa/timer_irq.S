@@ -6,11 +6,9 @@
 #
 # Test machine timer interrupt (MTIP, mcause = 0x8000000000000007).
 #
-# The simulation harness fires MTIP when sim_mtime >= sim_mtimecmp.
-# Tests write a delay value (in cycles) to physical address 0x80001FF0;
-# the harness sets sim_mtimecmp = sim_mtime + delay when it reads a
-# non-zero value there.  The test uses delay=500 to give the setup code
-# (mtvec/mie/mstatus writes) enough time to complete before MTIP fires.
+# The RTL fires MTIP when mtime >= mtimecmp.  The harness only provides the
+# memory read/write shim for CLINT MMIO; timer state and pending bits are
+# hardware-owned.
 #
 
 #include "riscv_test.h"
@@ -25,9 +23,11 @@ RVTEST_CODE_BEGIN
   la   t0, trap_handler
   csrw mtvec, t0
 
-  # Signal harness to fire MTIP ~500 cycles from now.
-  li   t0, 500
-  li   t1, 0x80001FF0
+  # Program CLINT mtimecmp five mtime ticks in the future.  The RTL mtime
+  # increments every 100 core cycles, leaving setup time before MTIP fires.
+  csrr t0, time
+  addi t0, t0, 5
+  li   t1, 0x02004000
   sd   t0, 0(t1)
 
   # Enable machine timer interrupt: mie.MTIE = bit 7.
