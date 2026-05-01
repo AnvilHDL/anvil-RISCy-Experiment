@@ -57,7 +57,7 @@ stateDiagram-v2
 
 **Delegation rule:** if `medeleg[cause]` (exceptions) or `mideleg[cause]` (interrupts) is set and the current privilege is ≤ S, the trap is taken to S-mode using `stvec/sepc/scause`. Otherwise it always goes to M-mode.
 
-**Interrupt priority:** MTI (bit 7) > MSI (bit 3) > STIP (bit 5) > SSIP (bit 1) > MEI (bit 11).  
+**Interrupt priority:** MTI (bit 7) > MSI (bit 3) > STIP (bit 5) > SSIP (bit 1) > SEIP (bit 9) > MEIP (bit 11).  
 Interrupts fire at WB before any instruction retires, so they are taken precisely at the current instruction boundary.
 
 ---
@@ -132,7 +132,7 @@ RISCy-Experiment/
 │       │   ├── fields.anvil # Instruction field extraction (rs1/rs2/rd/funct3…)
 │       │   └── immgen.anvil # Immediate sign-extension for all encoding formats
 │       ├── execute/         # Execution units
-│       │   ├── alu.anvil    # RV64I integer ALU + W-ops + MUL/DIV/REM
+│       │   ├── alu.anvil    # RV64I integer ALU + W-ops + MUL; DIV/REM uses pipeline RTL divider
 │       │   ├── branch.anvil # Branch condition evaluation
 │       │   └── cap_alu.anvil# Capstone capability ALU (future extension)
 │       ├── csr/
@@ -147,18 +147,22 @@ RISCy-Experiment/
 │       └── writeback/
 │           └── wb.anvil         # Writeback value selector (load vs ALU result)
 ├── sim/
-│   ├── sim_main.cpp   # Verilator harness: ELF loader, MMIO, Sv39 PTW, CLINT, PLIC
+│   ├── sim_main.cpp   # Verilator harness: ELF loader, MMIO shims, Sv39 PTW, PLIC
 │   ├── startup.S      # Minimal CRT for freestanding C++ program tests
 │   └── link.ld        # Linker script: program entry at 0x80000000
 ├── scripts/
 │   ├── build.sh              # Anvil → SystemVerilog → Verilator → binary
 │   ├── build_program_sim.sh  # Rebuild the ELF-loading simulator
-│   ├── run_riscv_tests.sh    # Run all 58 ISA regression tests
+│   ├── run_riscv_tests.sh    # Run all ISA regression tests
+│   ├── run_program_tests.sh  # Run all freestanding C++ program tests
+│   ├── verify_all.sh         # No-hang build + regression entry point
+│   ├── lint_generated_sv.sh  # Verilator lint for generated SystemVerilog
+│   ├── run_xv6_smoke.sh      # Boot xv6 with timeout and prompt check
 │   ├── run_program.sh        # Run a single C++ program test
 │   ├── run_program_trace.sh  # Run with pipeline trace output
 │   └── compile_program.sh    # Compile a .cpp file to RISC-V ELF
 └── tests/
-    ├── isa/             # 58 RISC-V ISA assembly tests (RV64I + M + privilege + Sv39)
+    ├── isa/             # RISC-V ISA assembly tests (privilege, Sv39, Capstone)
     │   ├── env/         # RISC-V test environment header (riscv_test.h)
     │   └── macros/      # Test assertion macros (test_macros.h)
     └── programs/        # Small freestanding C++ smoke tests
@@ -181,8 +185,15 @@ RISCy-Experiment/
 # Full build: Anvil → Verilator → binary
 scripts/build_program_sim.sh
 
-# Run ISA regression (58 tests, ~2 min)
-SIM_BIN=build/pipeline_core/obj_dir/Vpipeline_core scripts/run_riscv_tests.sh
+# Run ISA regression
+scripts/run_riscv_tests.sh
+
+# Run guarded build + ISA + C++ regressions
+scripts/verify_all.sh
+
+# Include xv6 smoke when kernel/fs image paths are available
+RUN_XV6=1 XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
+    XV6_FS_IMG=/path/to/xv6-riscv/fs.img scripts/verify_all.sh
 
 # Boot xv6 (requires xv6-riscv built with NCPU=1, PHYSTOP=0x80800000)
 build/pipeline_core/obj_dir/Vpipeline_core \
@@ -196,10 +207,15 @@ build/pipeline_core/obj_dir/Vpipeline_core \
 scripts/build.sh src/core/top/pipeline_core.anvil pipeline_core
 ```
 
-**Note:** Anvil builds are memory-intensive. If you hit OOM, prefix with:
+**Note:** Anvil builds are memory-intensive. The build script now runs Anvil
+with a bounded virtual-memory limit and host timeout by default:
+
 ```bash
-ulimit -v $((12 * 1024 * 1024)) && scripts/build.sh ...
+ANVIL_VMEM_MB=12288 ANVIL_TIMEOUT=20m scripts/build.sh ...
 ```
+
+Set `ANVIL_VMEM_MB=0` only if you intentionally want to disable the memory
+guard.
 
 ---
 
@@ -216,15 +232,19 @@ ulimit -v $((12 * 1024 * 1024)) && scripts/build.sh ...
 
 ## Implementation Status
 
+The current target is robust Verilator bring-up. Several features are
+simulation-backed and must be replaced with RTL before FPGA synthesis; see
+`FPGA_READINESS.md`.
+
 | Feature | Status |
 |---------|--------|
-| RV64I base ISA | ✅ Complete (58/58 tests pass) |
-| RV64M multiply/divide | ✅ Complete |
+| RV64I base ISA | ✅ Covered by regression tests |
+| RV64M multiply/divide | ✅ Complete in RTL |
 | M-mode traps (ecall, ebreak, exceptions) | ✅ Complete |
 | S-mode (stvec, sepc, scause, sret) | ✅ Complete |
-| Sv39 virtual memory | ✅ Complete (harness-assisted PTW) |
-| Timer interrupt (MTIP, STIP) | ✅ Complete |
-| xv6-riscv boot to shell | ✅ Complete |
+| Sv39 virtual memory | ✅ Verilator-tested; PTW/TLB simulation-backed |
+| Timer interrupt (MTIP, STIP) | ✅ RTL timer pending path; CLINT MMIO shim Verilator-backed |
+| xv6-riscv boot to shell | ✅ Verilator target; FPGA path needs RTL devices/storage |
 | RV64A atomics (AMO) | ✅ Complete |
 | FPGA synthesis | 🔲 Not started |
 | Capstone capability extension | 🔲 Scaffolding only |
@@ -236,5 +256,5 @@ ulimit -v $((12 * 1024 * 1024)) && scripts/build.sh ...
 1. ✅ RV64I + M-mode traps
 2. ✅ S-mode + Sv39 paging
 3. ✅ Boot xv6-riscv
-4. 🔲 FPGA hardening (real BRAM, UART RTL, CLINT RTL, timing closure)
+4. 🔲 FPGA hardening (real BRAM, UART/PLIC/virtio RTL or bus adapters, timing closure)
 5. 🔲 Capstone: capability domains, transitions, revocation

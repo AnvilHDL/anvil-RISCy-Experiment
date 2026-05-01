@@ -11,6 +11,10 @@ obj_dir/
 *.bin
 *.hex
 *.img
+*.log
+*.trace
+*.vcd
+*.fst
 
 # Verilator top-level executables
 Vtop

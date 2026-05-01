@@ -9,8 +9,19 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INPUT="$1"
 TIMEOUT="${2:-100000}"
+HOST_TIMEOUT="${HOST_TIMEOUT:-120s}"
 BUILD_LOG="$(mktemp)"
 trap 'rm -f "$BUILD_LOG"' EXIT
+
+run_with_timeout() {
+  local limit="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground "$limit" "$@"
+  else
+    "$@"
+  fi
+}
 
 if [[ "$INPUT" == *.cpp ]]; then
   ELF="${INPUT%.cpp}.elf"
@@ -27,4 +38,4 @@ BIN="$("$ROOT/scripts/build_program_sim.sh" 2>"$BUILD_LOG")" || {
   exit 1
 }
 
-"$BIN" "$ELF" "$TIMEOUT" --trace 2> >(grep -v 'Verilog .*finish' >&2)
+run_with_timeout "$HOST_TIMEOUT" "$BIN" "$ELF" "$TIMEOUT" --trace 2> >(grep -v 'Verilog .*finish' >&2)

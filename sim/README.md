@@ -2,7 +2,7 @@
 
 | File | Description |
 |------|-------------|
-| `sim_main.cpp` | Verilator harness: ELF loader, MMIO, Sv39 PTW, CLINT/UART/PLIC, virtio-blk |
+| `sim_main.cpp` | Verilator harness: ELF loader, MMIO shims, Sv39 PTW, UART/PLIC, virtio-blk |
 | `startup.S` | Minimal CRT for freestanding C++ program tests (sets up stack, calls main) |
 | `link.ld` | Linker script: places `.text` at 0x80000000 to match the processor boot PC |
 

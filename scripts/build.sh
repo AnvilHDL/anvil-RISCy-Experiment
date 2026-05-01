@@ -27,6 +27,10 @@ mkdir -p "$BUILD_DIR"
 eval "$(opam env --switch=/home/omar/anvil-exp-5.2 --set-switch)"
 ANVIL_BIN="${ANVIL_BIN:-/home/omar/NUS/Anvil-Experimental/_build/default/bin/main.exe}"
 ANVIL_FLAGS="${ANVIL_FLAGS:-}"
+ANVIL_VMEM_MB="${ANVIL_VMEM_MB:-12288}"
+ANVIL_TIMEOUT="${ANVIL_TIMEOUT:-20m}"
+VERILATOR_TIMEOUT="${VERILATOR_TIMEOUT:-30m}"
+MAKE_TIMEOUT="${MAKE_TIMEOUT:-30m}"
 if [ ! -x "$ANVIL_BIN" ]; then
   ANVIL_BIN="anvil"
 fi
@@ -39,10 +43,28 @@ if [ -z "$ANVIL_FLAGS" ]; then
   esac
 fi
 
-"$ANVIL_BIN" $ANVIL_FLAGS "$SRC_FILE" > "$SV_FILE"
+run_with_timeout() {
+  local limit="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground "$limit" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Mark only the Anvil compiler as a high-priority OOM target so the kernel
+# kills it before unrelated desktop/session processes if memory gets critical.
+(
+  echo 900 > /proc/self/oom_score_adj 2>/dev/null || true
+  if [ "$ANVIL_VMEM_MB" -gt 0 ] 2>/dev/null; then
+    ulimit -v $((ANVIL_VMEM_MB * 1024))
+  fi
+  run_with_timeout "$ANVIL_TIMEOUT" "$ANVIL_BIN" $ANVIL_FLAGS "$SRC_FILE"
+) > "$SV_FILE"
 sed "s/Vtop/V${TOP_MODULE}/g" "$DRIVER_TEMPLATE" > "$DRIVER_CPP"
 
-verilator --cc --exe --public-flat-rw --top "$TOP_MODULE" --Mdir "$OBJ_DIR" -j 1 "$SV_FILE" "$DRIVER_CPP" >&2
-make -C "$OBJ_DIR" -f "V${TOP_MODULE}.mk" -j 1 OBJCACHE= >&2
+run_with_timeout "$VERILATOR_TIMEOUT" verilator --cc --exe --public-flat-rw --top "$TOP_MODULE" --Mdir "$OBJ_DIR" -j 1 "$SV_FILE" "$DRIVER_CPP" >&2
+run_with_timeout "$MAKE_TIMEOUT" make -C "$OBJ_DIR" -f "V${TOP_MODULE}.mk" -j 1 OBJCACHE= >&2
 
 echo "$OBJ_DIR/V$TOP_MODULE"

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISA_DIR="$ROOT/tests/isa"
+PROGRAM_DIR="$ROOT/tests/programs"
 : "${SIM_BIN:="$ROOT/build/pipeline_core_program/obj_dir/Vpipeline_core"}"
 : "${TEST_COMPILE_TIMEOUT:=30s}"
 : "${TEST_RUN_TIMEOUT:=30s}"
+: "${SIM_CYCLE_LIMIT:=100000}"
 
 run_with_timeout() {
   local limit="$1"
@@ -25,46 +26,35 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
-echo "Starting RISC-V ISA Tests"
+echo "Starting C++ Program Tests"
 echo "---------------------------------"
 
-for s_file in "$ISA_DIR"/*.S; do
-  t_name=$(basename "${s_file%.S}")
-  elf_file="$ISA_DIR/$t_name.elf"
+for cpp_file in "$PROGRAM_DIR"/*.cpp; do
+  test_name="$(basename "$cpp_file")"
+  elf_file="${cpp_file%.cpp}.elf"
   TOTAL=$((TOTAL + 1))
-  
-  printf "%-15s " "$t_name..."
-  
-  # Compile
-  if ! run_with_timeout "$TEST_COMPILE_TIMEOUT" clang++ \
-    --target=riscv64-unknown-elf \
-    -fuse-ld=lld \
-    -march=rv64im_zicsr \
-    -mabi=lp64 \
-    -nostdlib \
-    -ffreestanding \
-    -fno-exceptions \
-    -fno-rtti \
-    -Wl,-T,"$ROOT/sim/link.ld" \
-    -I "$ISA_DIR/env" -I "$ISA_DIR/macros/scalar" \
-    "$ROOT/sim/startup.S" "$s_file" -o "$elf_file" 2>/dev/null; then
+
+  printf "%-22s " "$test_name..."
+
+  if ! run_with_timeout "$TEST_COMPILE_TIMEOUT" \
+      "$ROOT/scripts/compile_program.sh" "$cpp_file" "$elf_file" >/dev/null; then
     echo -e "\033[0;31mCOMPILE FAILED\033[0m"
     FAILED=$((FAILED + 1))
     continue
   fi
-  
-  # Run
-  OUT=$(run_with_timeout "$TEST_RUN_TIMEOUT" "$SIM_BIN" "$elf_file" 100000 2>&1)
+
+  set +e
+  OUT=$(run_with_timeout "$TEST_RUN_TIMEOUT" "$SIM_BIN" "$elf_file" "$SIM_CYCLE_LIMIT" 2>&1)
   EXIT_STATUS=$?
+  set -e
   EXIT_VAL=$(echo "$OUT" | awk '/exit / { print $2; exit }')
-  
-  if [ "$EXIT_STATUS" -eq 0 ] && [ "$EXIT_VAL" == "0" ]; then
+
+  if [ "$EXIT_STATUS" -eq 0 ] && [ "$EXIT_VAL" = "0" ]; then
     echo -e "\033[0;32mPASSED\033[0m"
     PASSED=$((PASSED + 1))
   else
-    echo -e "\033[0;31mFAILED\033[0m (exit $EXIT_VAL)"
+    echo -e "\033[0;31mFAILED\033[0m (exit ${EXIT_VAL:-none})"
     FAILED=$((FAILED + 1))
-    # Show diagnostics if failed
     echo "$OUT" | grep "diag" || true
   fi
 done

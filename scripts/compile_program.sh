@@ -13,6 +13,7 @@ OUT="${2:-${SRC%.cpp}.elf}"
 COMMON_FLAGS=(
   -march=rv64im_zicsr
   -mabi=lp64
+  -mcmodel=medany
   -nostdlib
   -O1
   -ffreestanding
