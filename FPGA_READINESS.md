@@ -10,6 +10,9 @@ The final goal is:
 3. synthesize on FPGA with real memory and devices,
 4. keep ISA and xv6 regressions passing throughout.
 
+The selected FPGA target is Digilent Genesys 2, following a CVA6-like
+repository shape with `fpga/constraints`, `fpga/scripts`, and `fpga/src`.
+
 ## Current Bring-Up Boundary
 
 The Anvil RTL owns the 5-stage in-order RV64 pipeline, decode, ALU/MUL,
@@ -56,6 +59,26 @@ RUN_XV6=1 XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
 
 The smoke watches the boot log and terminates the simulator once the xv6 shell
 prompt appears, so a successful boot does not run until the full cycle budget.
+
+## Genesys 2 FPGA Entry Point
+
+Use:
+
+```bash
+scripts/export_fpga_rtl.sh
+scripts/lint_fpga_rtl.sh
+cd fpga && make check
+cd fpga && make synth
+```
+
+`scripts/export_fpga_rtl.sh` runs only bounded Anvil generation and does not run
+Verilator, so FPGA RTL export avoids the larger simulator build path. The Vivado
+synthesis target is a smoke wrapper for Genesys 2 (`XC7K325T-2FFG900C`) that
+packages the current core behind board clock/reset/LED/UART pins.
+
+This wrapper is intentionally not yet a complete xv6-capable FPGA SoC. It is the
+stable integration point for replacing `host_mem[]`, Sv39 PTW, UART/PLIC/virtio,
+and disk simulation services with synthesizable hardware.
 
 ## FPGA Milestones
 

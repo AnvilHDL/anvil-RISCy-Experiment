@@ -61,6 +61,11 @@ require_pattern "MMIO/peripheral RTL replacement" "RTL peripherals or bus adapte
 require_pattern "RTL timer ownership" 'RTL `mtime`/`mtimecmp`/`stimecmp`' "FPGA_READINESS.md"
 require_pattern "capability RF RTL replacement" "RTL capability RF" "FPGA_READINESS.md"
 require_pattern "xv6 smoke environment" "RUN_XV6=1" "FPGA_READINESS.md"
+require_pattern "Genesys 2 target" "Genesys 2" "FPGA_READINESS.md"
+require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "FPGA_READINESS.md"
+
+require_pattern "Genesys 2 constraints" "XC7K325T-2FFG900C" "fpga/constraints/genesys2.xdc"
+require_pattern "Genesys 2 wrapper honesty" "synthesis smoke target" "fpga/src/risky_genesys2_top.sv"
 
 if [ "$fail" -ne 0 ]; then
   printf '[fpga-boundary] FAILED\n' >&2

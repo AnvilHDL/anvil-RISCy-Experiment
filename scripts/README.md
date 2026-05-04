@@ -4,12 +4,14 @@
 |--------|---------|
 | `build.sh` | Core build: Anvil → SystemVerilog → Verilator → binary |
 | `build_program_sim.sh` | Rebuild the ELF-loading simulator (calls `build.sh`) |
+| `export_fpga_rtl.sh` | Bounded Anvil-only RTL export for FPGA flows |
 | `compile_program.sh` | Compile a single `.cpp` file to a RISC-V ELF for testing |
 | `run_riscv_tests.sh` | Compile and run all ISA assembly tests |
 | `run_program_tests.sh` | Compile and run all freestanding C++ program tests |
 | `run_program.sh` | Compile and run a single C++ program test |
 | `run_program_trace.sh` | Like `run_program.sh` but with pipeline trace output |
 | `lint_generated_sv.sh` | Verilator lint for generated SystemVerilog |
+| `lint_fpga_rtl.sh` | Export and lint the Genesys 2 FPGA RTL wrapper/core |
 | `run_xv6_smoke.sh` | Boot xv6 with explicit kernel/fs image paths and stop once the shell prompt appears |
 | `check_fpga_boundary.sh` | Ensure simulation-backed services are documented and stale harness patches stay removed |
 | `verify_all.sh` | Guarded build plus ISA and C++ regressions |
@@ -38,6 +40,7 @@ build/pipeline_core_program/obj_dir/Vpipeline_core tests/isa/csr.elf 10000 2>&1 
 | `SIM_BIN` | (built by `build_program_sim.sh`) | Path to the simulator binary for test scripts |
 | `ANVIL_VMEM_MB` | `12288` | Virtual-memory cap for the Anvil compiler; set `0` to disable |
 | `ANVIL_TIMEOUT` | `20m` | Host timeout for Anvil compilation |
+| `FPGA_OUT_DIR` | `build/fpga/rtl` | Output directory for FPGA RTL export |
 | `VERILATOR_TIMEOUT` | `30m` | Host timeout for Verilator C++ generation |
 | `MAKE_TIMEOUT` | `30m` | Host timeout for the generated simulator build |
 | `TEST_COMPILE_TIMEOUT` | `30s` | Per-ISA-test compile timeout |
@@ -52,3 +55,4 @@ build/pipeline_core_program/obj_dir/Vpipeline_core tests/isa/csr.elf 10000 2>&1 
 | `XV6_CYCLE_LIMIT` | `30000000` | Simulator cycle budget for xv6 smoke |
 | `XV6_HOST_TIMEOUT` | `180s` | Host timeout for xv6 smoke |
 | `LINT_TIMEOUT` | `2m` | Host timeout for generated SystemVerilog lint |
+| `FPGA_LINT_TIMEOUT` | `3m` | Host timeout for FPGA wrapper/core lint |

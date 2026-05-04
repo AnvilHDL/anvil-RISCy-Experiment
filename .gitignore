@@ -5,6 +5,9 @@ obj_dir/
 *.d
 *.a
 *.sv
+!fpga/
+!fpga/src/
+!fpga/src/*.sv
 
 # Compiled test and program binaries
 *.elf

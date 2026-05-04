@@ -150,9 +150,14 @@ RISCy-Experiment/
 │   ├── sim_main.cpp   # Verilator harness: ELF loader, MMIO shims, Sv39 PTW, PLIC
 │   ├── startup.S      # Minimal CRT for freestanding C++ program tests
 │   └── link.ld        # Linker script: program entry at 0x80000000
+├── fpga/
+│   ├── constraints/genesys2.xdc # Genesys 2 board constraints
+│   ├── scripts/                 # Vivado check/synthesis scripts
+│   └── src/risky_genesys2_top.sv # Genesys 2 synthesis smoke wrapper
 ├── scripts/
 │   ├── build.sh              # Anvil → SystemVerilog → Verilator → binary
 │   ├── build_program_sim.sh  # Rebuild the ELF-loading simulator
+│   ├── export_fpga_rtl.sh    # Bounded Anvil RTL export for FPGA flows
 │   ├── run_riscv_tests.sh    # Run all ISA regression tests
 │   ├── run_program_tests.sh  # Run all freestanding C++ program tests
 │   ├── verify_all.sh         # No-hang build + regression entry point
@@ -194,6 +199,10 @@ scripts/verify_all.sh
 # Include xv6 smoke when kernel/fs image paths are available
 RUN_XV6=1 XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
     XV6_FS_IMG=/path/to/xv6-riscv/fs.img scripts/verify_all.sh
+
+# Export RTL and run Genesys 2 FPGA synthesis smoke when Vivado is available
+scripts/export_fpga_rtl.sh
+cd fpga && make synth
 
 # Boot xv6 (requires xv6-riscv built with NCPU=1, PHYSTOP=0x80800000)
 build/pipeline_core/obj_dir/Vpipeline_core \
@@ -246,7 +255,7 @@ simulation-backed and must be replaced with RTL before FPGA synthesis; see
 | Timer interrupt (MTIP, STIP) | ✅ RTL timer pending path; CLINT MMIO shim Verilator-backed |
 | xv6-riscv boot to shell | ✅ Verilator target; FPGA path needs RTL devices/storage |
 | RV64A atomics (AMO) | ✅ Complete |
-| FPGA synthesis | 🔲 Not started |
+| FPGA synthesis | 🔲 Genesys 2 synthesis-smoke flow scaffolded |
 | Capstone capability extension | 🔲 Scaffolding only |
 
 ---
@@ -256,5 +265,5 @@ simulation-backed and must be replaced with RTL before FPGA synthesis; see
 1. ✅ RV64I + M-mode traps
 2. ✅ S-mode + Sv39 paging
 3. ✅ Boot xv6-riscv
-4. 🔲 FPGA hardening (real BRAM, UART/PLIC/virtio RTL or bus adapters, timing closure)
+4. 🔲 FPGA hardening (Genesys 2 Vivado flow, real BRAM, UART/PLIC/virtio RTL or bus adapters, timing closure)
 5. 🔲 Capstone: capability domains, transitions, revocation
