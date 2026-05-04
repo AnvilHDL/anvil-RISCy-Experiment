@@ -37,6 +37,14 @@ if ! command -v "$ANVIL_BIN" >/dev/null 2>&1 && [ ! -x "$ANVIL_BIN" ]; then
   echo "[fpga-rtl] Anvil compiler not found: $ANVIL_BIN" >&2
   exit 1
 fi
+if [ ! -r "$SRC_FILE" ]; then
+  echo "[fpga-rtl] Anvil source not readable: $SRC_FILE" >&2
+  exit 1
+fi
+if [ ! -r "$WRAPPER_SRC" ]; then
+  echo "[fpga-rtl] FPGA wrapper not readable: $WRAPPER_SRC" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT_DIR" "$(dirname "$FILELIST")"
 
@@ -46,7 +54,8 @@ echo "[fpga-rtl] generating $SV_FILE"
   if [ "$ANVIL_VMEM_MB" -gt 0 ] 2>/dev/null; then
     ulimit -v $((ANVIL_VMEM_MB * 1024))
   fi
-  run_with_timeout "$ANVIL_TIMEOUT" "$ANVIL_BIN" $ANVIL_FLAGS "$SRC_FILE"
+  read -r -a anvil_flags <<< "$ANVIL_FLAGS"
+  run_with_timeout "$ANVIL_TIMEOUT" "$ANVIL_BIN" "${anvil_flags[@]}" "$SRC_FILE"
 ) > "$SV_FILE"
 
 cp "$WRAPPER_SRC" "$WRAPPER_OUT"

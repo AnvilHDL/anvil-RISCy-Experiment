@@ -8,6 +8,10 @@ if {$root_dir eq "" || $build_dir eq ""} {
 if {$jobs eq ""} {
   set jobs 4
 }
+if {![string is integer -strict $jobs] || $jobs < 1} {
+  error "jobs must be a positive integer, got '$jobs'"
+}
+set_param general.maxThreads $jobs
 
 set part_name "xc7k325tffg900-2"
 set top_name "risky_genesys2_top"
@@ -35,6 +39,9 @@ while {[gets $fp line] >= 0} {
   }
 }
 close $fp
+if {[llength $rtl_files] == 0} {
+  error "empty FPGA filelist: $filelist"
+}
 
 read_verilog -sv $rtl_files
 read_xdc $xdc_file

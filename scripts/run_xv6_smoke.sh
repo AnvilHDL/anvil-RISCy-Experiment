@@ -19,6 +19,15 @@ run_with_timeout() {
   fi
 }
 
+sim_pid=""
+cleanup() {
+  if [ -n "$sim_pid" ] && kill -0 "$sim_pid" 2>/dev/null; then
+    kill "$sim_pid" 2>/dev/null || true
+    wait "$sim_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 if [ ! -r "$XV6_KERNEL" ]; then
   echo "[xv6] kernel not readable: $XV6_KERNEL" >&2
   exit 1
@@ -44,6 +53,7 @@ while kill -0 "$sim_pid" 2>/dev/null; do
   if grep -q 'xv6 kernel is booting' "$XV6_BOOT_LOG" && grep -q '^\$' "$XV6_BOOT_LOG"; then
     kill "$sim_pid" 2>/dev/null || true
     wait "$sim_pid" 2>/dev/null || true
+    sim_pid=""
     echo "[xv6] boot reached shell prompt"
     exit 0
   fi
@@ -53,6 +63,7 @@ done
 set +e
 wait "$sim_pid"
 status=$?
+sim_pid=""
 set -e
 
 if grep -q 'xv6 kernel is booting' "$XV6_BOOT_LOG" && grep -q '^\$' "$XV6_BOOT_LOG"; then

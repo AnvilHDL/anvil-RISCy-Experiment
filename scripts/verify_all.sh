@@ -17,6 +17,7 @@ run_with_timeout() {
 
 echo "[verify] shell syntax"
 bash -n "$ROOT"/scripts/*.sh
+bash -n "$ROOT"/fpga/scripts/*.sh
 
 echo "[verify] FPGA boundary documentation"
 "$ROOT/scripts/check_fpga_boundary.sh"

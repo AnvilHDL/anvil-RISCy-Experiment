@@ -24,15 +24,40 @@ fi
 
 mkdir -p "$BUILD_DIR"
 
-eval "$(opam env --switch=/home/omar/anvil-exp-5.2 --set-switch)"
 ANVIL_BIN="${ANVIL_BIN:-/home/omar/NUS/Anvil-Experimental/_build/default/bin/main.exe}"
 ANVIL_FLAGS="${ANVIL_FLAGS:-}"
 ANVIL_VMEM_MB="${ANVIL_VMEM_MB:-12288}"
 ANVIL_TIMEOUT="${ANVIL_TIMEOUT:-20m}"
 VERILATOR_TIMEOUT="${VERILATOR_TIMEOUT:-30m}"
 MAKE_TIMEOUT="${MAKE_TIMEOUT:-30m}"
+
+if [ -f "$HOME/anvil-exp-5.2/.opam-switch/environment" ] || command -v opam >/dev/null 2>&1; then
+  eval "$(opam env --switch=/home/omar/anvil-exp-5.2 --set-switch 2>/dev/null || true)"
+fi
+
 if [ ! -x "$ANVIL_BIN" ]; then
   ANVIL_BIN="anvil"
+fi
+
+if [ ! -r "$SRC_FILE" ]; then
+  echo "[build] Anvil source not readable: $SRC_FILE" >&2
+  exit 1
+fi
+if [ ! -r "$DRIVER_TEMPLATE" ]; then
+  echo "[build] simulator driver template not readable: $DRIVER_TEMPLATE" >&2
+  exit 1
+fi
+if ! command -v "$ANVIL_BIN" >/dev/null 2>&1 && [ ! -x "$ANVIL_BIN" ]; then
+  echo "[build] Anvil compiler not found: $ANVIL_BIN" >&2
+  exit 1
+fi
+if ! command -v verilator >/dev/null 2>&1; then
+  echo "[build] verilator not found" >&2
+  exit 1
+fi
+if ! command -v make >/dev/null 2>&1; then
+  echo "[build] make not found" >&2
+  exit 1
 fi
 
 if [ -z "$ANVIL_FLAGS" ]; then
@@ -60,7 +85,8 @@ run_with_timeout() {
   if [ "$ANVIL_VMEM_MB" -gt 0 ] 2>/dev/null; then
     ulimit -v $((ANVIL_VMEM_MB * 1024))
   fi
-  run_with_timeout "$ANVIL_TIMEOUT" "$ANVIL_BIN" $ANVIL_FLAGS "$SRC_FILE"
+  read -r -a anvil_flags <<< "$ANVIL_FLAGS"
+  run_with_timeout "$ANVIL_TIMEOUT" "$ANVIL_BIN" "${anvil_flags[@]}" "$SRC_FILE"
 ) > "$SV_FILE"
 sed "s/Vtop/V${TOP_MODULE}/g" "$DRIVER_TEMPLATE" > "$DRIVER_CPP"
 

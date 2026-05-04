@@ -19,5 +19,10 @@ if [ ! -f "$SV_FILE" ]; then
   "$ROOT/scripts/build_program_sim.sh" >/dev/null
 fi
 
+if ! command -v verilator >/dev/null 2>&1; then
+  echo "[lint] verilator not found" >&2
+  exit 1
+fi
+
 run_with_timeout "$LINT_TIMEOUT" \
   verilator --lint-only -Wno-fatal --top pipeline_core "$SV_FILE"
