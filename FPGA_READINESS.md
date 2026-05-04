@@ -34,8 +34,10 @@ complete hardware processor:
 Do not treat a Verilator pass as FPGA readiness. It proves architectural
 behavior for the current simulation contract.
 
-`FPGA_SYNTHESIS_AUDIT.md` tracks the file-by-file boundary between
-synthesizable RTL/export tooling and simulation-only services.
+The tracked source tree should not contain demo instruction/data memories. The
+current core exposes fetch/load data registers and store commit side channels;
+`sim/sim_main.cpp` models memory only for Verilator. The FPGA path must attach
+real BRAM/DDR and MMIO hardware rather than relying on simulator memory.
 
 ## Robust Verification Entry Point
 
@@ -82,6 +84,20 @@ packages the current core behind board clock/reset/LED/UART pins.
 This wrapper is intentionally not yet a complete xv6-capable FPGA SoC. It is the
 stable integration point for replacing `host_mem[]`, Sv39 PTW, UART/PLIC/virtio,
 and disk simulation services with synthesizable hardware.
+
+Current non-production wrapper behavior:
+
+- `tx` is held high so UART is electrically idle.
+- `fan_pwm` is held high so the board fan remains enabled.
+- LEDs show reset, heartbeat, and RX pin state.
+- No real memory, UART, interrupt, storage, or boot-loader hardware is attached.
+
+These are acceptable for synthesis smoke only. Do not claim board software
+execution until the wrapper is extended into a real SoC.
+
+Capstone is decoded and regression-tested in simulation, but it is not hardened
+for FPGA synthesis yet. The main pipeline currently keeps `cap_result` zeroed
+until capability state is migrated in bounded scalarized RTL slices.
 
 ## FPGA Milestones
 

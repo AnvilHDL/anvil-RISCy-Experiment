@@ -140,8 +140,6 @@ RISCy-Experiment/
 │       ├── hazard/
 │       │   ├── hazard.anvil     # Stall signal generation (load-use, control-use)
 │       │   └── forward.anvil    # EX→ID and MEM→ID bypass multiplexers
-│       ├── fetch/
-│       │   └── imem.anvil       # Instruction memory read (thin wrapper)
 │       ├── memory/
 │       │   └── mem_stage.anvil  # MEM stage: load sign-extension, store commit
 │       └── writeback/
@@ -243,7 +241,7 @@ guard.
 
 The current target is robust Verilator bring-up. Several features are
 simulation-backed and must be replaced with RTL before FPGA synthesis; see
-`FPGA_READINESS.md` and `FPGA_SYNTHESIS_AUDIT.md`.
+`FPGA_READINESS.md`.
 
 | Feature | Status |
 |---------|--------|

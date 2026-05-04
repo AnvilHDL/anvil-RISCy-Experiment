@@ -43,6 +43,18 @@ require_absent_pattern() {
   fi
 }
 
+require_absent_file() {
+  local label="$1"
+  local file="$2"
+
+  if [ -e "$ROOT/$file" ]; then
+    printf '[fpga-boundary] forbidden stale file found: %s (%s)\n' "$label" "$file" >&2
+    fail=1
+  else
+    printf '[fpga-boundary] absent as expected: %s\n' "$label"
+  fi
+}
+
 require_harness_pattern "host RAM model" "static std::uint8_t host_mem\\[RAM_SIZE\\]"
 require_harness_pattern "Sv39 software TLB/PTW" "static Sv39Tlb sv39_tlb"
 require_harness_pattern "MMIO store dispatcher" "dispatch_mmio_store"
@@ -63,14 +75,15 @@ require_pattern "capability RF RTL replacement" "RTL capability RF" "FPGA_READIN
 require_pattern "xv6 smoke environment" "RUN_XV6=1" "FPGA_READINESS.md"
 require_pattern "Genesys 2 target" "Genesys 2" "FPGA_READINESS.md"
 require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "FPGA_READINESS.md"
-require_pattern "synthesis audit exists" "File-By-File Boundary" "FPGA_SYNTHESIS_AUDIT.md"
-require_pattern "synthesis smoke scope" "bounded synthesis smoke target" "FPGA_SYNTHESIS_AUDIT.md"
-require_pattern "wrapper non-production behavior" "UART is electrically idle" "FPGA_SYNTHESIS_AUDIT.md"
-require_pattern "Capstone RTL gap" "main pipeline currently keeps" "FPGA_SYNTHESIS_AUDIT.md"
+require_pattern "no demo RTL memories policy" "should not contain demo instruction/data memories" "FPGA_READINESS.md"
+require_pattern "wrapper non-production behavior" "UART is electrically idle" "FPGA_READINESS.md"
+require_pattern "Capstone RTL gap" "cap_result.*zeroed" "FPGA_READINESS.md"
 
 require_pattern "Genesys 2 constraints" "XC7K325T-2FFG900C" "fpga/constraints/genesys2.xdc"
 require_pattern "Genesys 2 wrapper honesty" "synthesis smoke target" "fpga/src/risky_genesys2_top.sv"
 require_absent_pattern "ambiguous placeholder language in FPGA wrapper" "dummy|placeholder|TODO|FIXME|HACK" "fpga/src/risky_genesys2_top.sv"
+require_absent_file "demo instruction memory RTL file" "src/core/fetch/imem.anvil"
+require_absent_pattern "demo instruction memory RTL import" "demo_imem|Hand-written instruction memory|fetch/imem" "src/core/top/pipeline_core.anvil"
 
 if [ "$fail" -ne 0 ]; then
   printf '[fpga-boundary] FAILED\n' >&2

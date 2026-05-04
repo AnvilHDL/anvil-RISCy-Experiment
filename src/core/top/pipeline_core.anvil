@@ -1,5 +1,4 @@
 import "../../types/pipeline.anvilh"
-import "../fetch/imem.anvil"
 import "../decode/fields.anvil"
 import "../decode/immgen.anvil"
 import "../decode/ctrl.anvil"
