@@ -952,8 +952,10 @@ static void write_mem_wb_alu_result(Vtop___024root* rootp, std::uint64_t val) {
     p[18u] = (p[18u] & ~0x3u) | static_cast<std::uint32_t>((val >> 62u) & 0x3u);
 }
 
-// Capability register file lives in the harness: capability_t[32] inside pipeline_core.anvil
-// pushes the Anvil elaborator past its memory limit (same reason as the Sv39 PTW).
+// Capability register file lives in the harness for now. Moving the full
+// capability_t[32] architectural state directly into the Anvil pipeline pushes
+// the elaborator past its memory limit; FPGA hardening should migrate it in
+// smaller scalarized RTL slices.
 
 struct CapabilityT {
     bool     valid;

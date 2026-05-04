@@ -1,4 +1,4 @@
-// Minimal encoding.h stub — actual CSR/privilege encoding not needed for ISA tests.
+// Minimal compatibility header; these ISA tests define required encodings locally.
 #ifndef RISCV_ENCODING_H
 #define RISCV_ENCODING_H
 #endif

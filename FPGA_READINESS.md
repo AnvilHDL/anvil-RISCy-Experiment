@@ -34,6 +34,9 @@ complete hardware processor:
 Do not treat a Verilator pass as FPGA readiness. It proves architectural
 behavior for the current simulation contract.
 
+`FPGA_SYNTHESIS_AUDIT.md` tracks the file-by-file boundary between
+synthesizable RTL/export tooling and simulation-only services.
+
 ## Robust Verification Entry Point
 
 Use:

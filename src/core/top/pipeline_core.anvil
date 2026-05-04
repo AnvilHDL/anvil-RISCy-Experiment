@@ -831,7 +831,10 @@ proc pipeline_core() {
                         branch_taken = if ex_final_exc.has_exc == 1'b1 { 1'b0 } else { ex_br_res.taken };
                         branch_tgt = ex_br_res.target;
                         cap_target_reg = cur_id_ex.cap_target_reg;
-                        cap_result = call zero_cap(); // TODO: replace with cap_alu_exec once elaborator limits are resolved
+                        // Capstone architectural behavior is still simulation-owned;
+                        // keep this zeroed until capability state is migrated in
+                        // bounded scalarized RTL slices.
+                        cap_result = call zero_cap();
                         csr_addr = ex_csr_addr;
                         csr_new_val = ex_csr_new_val;
                         csr_we = ex_csr_we;

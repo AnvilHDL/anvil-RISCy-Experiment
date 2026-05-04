@@ -243,7 +243,7 @@ guard.
 
 The current target is robust Verilator bring-up. Several features are
 simulation-backed and must be replaced with RTL before FPGA synthesis; see
-`FPGA_READINESS.md`.
+`FPGA_READINESS.md` and `FPGA_SYNTHESIS_AUDIT.md`.
 
 | Feature | Status |
 |---------|--------|
