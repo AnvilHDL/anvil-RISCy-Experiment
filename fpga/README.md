@@ -16,6 +16,8 @@ The current FPGA targets are:
 - `fpga/src/risky_genesys2_bram_top.sv`
 - `fpga/constraints/genesys2.xdc`
 - `fpga/scripts/vivado_synth_genesys2.tcl`
+- `fpga/scripts/vivado_bitstream_bram_genesys2.tcl`
+- `fpga/scripts/program_bram_genesys2.tcl`
 
 The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
 clock/reset, LED, fan, and UART-idle pins. The BRAM wrapper packages a generated
@@ -46,6 +48,12 @@ cd fpga && make check
 # Export/lint the BRAM-backed bare-metal target via Make.
 cd fpga && make bram
 
+# Implement the BRAM-backed target and write a .bit file.
+cd fpga && make bitstream-bram
+
+# Program a locally connected Genesys 2 board with that .bit file.
+cd fpga && make program-bram
+
 # Run Vivado synthesis smoke when Vivado is installed/sourced.
 cd fpga && make synth
 ```
@@ -59,7 +67,40 @@ Useful environment variables:
 | `FPGA_OUT_DIR` | `build/fpga/rtl` | Generated RTL output directory |
 | `FPGA_BUILD_DIR` | `build/fpga/vivado` | Vivado project/output directory |
 | `VIVADO_TIMEOUT` | `45m` | Wall-clock limit for Vivado synthesis |
+| `VIVADO_IMPL_TIMEOUT` | `2h` | Wall-clock limit for Vivado implementation/bitstream |
 | `VIVADO_JOBS` | `4` | Vivado synthesis job count |
+| `BRAM_BITSTREAM` | `build/fpga/vivado-bram/risky_genesys2_bram.bit` | Bitstream used by `make program-bram` |
+| `HW_SERVER_URL` | `localhost:3121` | Vivado hardware-server URL for board programming |
+
+## Server Build, Laptop Program Flow
+
+If Vivado implementation runs on a remote server and the board is attached to a
+laptop, build the bitstream on the server:
+
+```bash
+cd RISCy-Experiment
+source /tools/Xilinx/Vivado/<version>/settings64.sh
+cd fpga
+make check
+make bram
+make bitstream-bram
+```
+
+Then copy `build/fpga/vivado-bram/risky_genesys2_bram.bit` to the laptop and
+program the local board:
+
+```bash
+cd RISCy-Experiment
+source /tools/Xilinx/Vivado/<version>/settings64.sh
+cd fpga
+BRAM_BITSTREAM=/path/to/risky_genesys2_bram.bit make program-bram
+```
+
+Expected first-board behavior for the BRAM target:
+
+- `led[0]` turns on after reset is released.
+- `led[1]` blinks as a heartbeat.
+- `led[7:2]` show the lower six bits of the bare-metal LED MMIO store.
 
 ## Why This Is the First FPGA Step
 

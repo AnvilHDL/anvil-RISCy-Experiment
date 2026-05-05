@@ -84,6 +84,7 @@ scripts/export_fpga_bram_rtl.sh
 scripts/lint_fpga_bram_rtl.sh
 cd fpga && make check
 cd fpga && make bram
+cd fpga && make bitstream-bram
 cd fpga && make synth
 ```
 

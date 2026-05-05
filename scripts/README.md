@@ -14,6 +14,8 @@
 | `lint_generated_sv.sh` | Verilator lint for generated SystemVerilog |
 | `lint_fpga_rtl.sh` | Export and lint the Genesys 2 FPGA RTL wrapper/core |
 | `lint_fpga_bram_rtl.sh` | Export and lint the BRAM-backed Genesys 2 wrapper/core |
+| `../fpga/scripts/run_vivado_bram_bitstream.sh` | Run Vivado implementation and write the BRAM target bitstream |
+| `../fpga/scripts/program_bram_bitstream.sh` | Program a locally attached Genesys 2 with the BRAM bitstream |
 | `run_xv6_smoke.sh` | Boot xv6 with explicit kernel/fs image paths and stop once the shell prompt appears |
 | `check_fpga_boundary.sh` | Ensure simulation-backed services are documented and stale harness patches stay removed |
 | `verify_all.sh` | Guarded build plus ISA and C++ regressions |
