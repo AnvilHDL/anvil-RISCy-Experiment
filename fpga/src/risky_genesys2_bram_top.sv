@@ -54,7 +54,9 @@ module risky_genesys2_bram_top (
     wire [31:0] core_imem_rdata;
     wire [63:0] core_mem_rdata;
 
-    reg [63:0] bram [0:RAM_WORDS-1];
+    (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
+    reg [63:0] fetch_word_q = 64'h0000_0013_0000_0013;
+    reg [63:0] mem_word_q = 64'd0;
     reg [7:0] led_q = 8'h00;
     reg [31:0] heartbeat_q = 32'd0;
 
@@ -71,9 +73,8 @@ module risky_genesys2_bram_top (
     wire [9:0] mem_word_idx = mem_offset[12:3];
     wire [9:0] store_word_idx = store_offset[12:3];
 
-    wire [63:0] fetch_word = pc_in_ram ? bram[pc_word_idx] : 64'h0000_0013_0000_0013;
-    assign core_imem_rdata = pc_byte_idx[2] ? fetch_word[63:32] : fetch_word[31:0];
-    assign core_mem_rdata = mem_in_ram ? bram[mem_word_idx] : 64'd0;
+    assign core_imem_rdata = pc_byte_idx[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
+    assign core_mem_rdata = mem_word_q;
 
     integer i;
     initial begin
@@ -90,15 +91,22 @@ module risky_genesys2_bram_top (
         bram[1] = 64'h0000_006f_0062_a023;
     end
 
+    // Keep the RAM in a synchronous read/write template so Vivado infers BRAM
+    // instead of dissolving the array into flip-flops.
+    always @(posedge clk200) begin
+        fetch_word_q <= pc_in_ram ? bram[pc_word_idx] : 64'h0000_0013_0000_0013;
+        mem_word_q <= mem_in_ram ? bram[mem_word_idx] : 64'd0;
+        if (core_store_valid && store_in_ram) begin
+            bram[store_word_idx] <= core_store_word;
+        end
+    end
+
     always @(posedge clk200 or negedge rst_ni) begin
         if (!rst_ni) begin
             led_q <= 8'h00;
             heartbeat_q <= 32'd0;
         end else begin
             heartbeat_q <= heartbeat_q + 32'd1;
-            if (core_store_valid && store_in_ram) begin
-                bram[store_word_idx] <= core_store_word;
-            end
             if (core_store_valid && core_store_addr == LED_MMIO) begin
                 led_q <= core_store_word[7:0];
             end
