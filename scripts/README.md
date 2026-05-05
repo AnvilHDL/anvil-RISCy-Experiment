@@ -5,6 +5,7 @@
 | `build.sh` | Core build: Anvil → SystemVerilog → Verilator → binary |
 | `build_program_sim.sh` | Rebuild the ELF-loading simulator (calls `build.sh`) |
 | `export_fpga_rtl.sh` | Bounded Anvil-only RTL export for FPGA flows |
+| `export_fpga_bram_rtl.sh` | Export a BRAM-backed bare-metal Genesys 2 target without adding memories to Anvil |
 | `compile_program.sh` | Compile a single `.cpp` file to a RISC-V ELF for testing |
 | `run_riscv_tests.sh` | Compile and run all ISA assembly tests |
 | `run_program_tests.sh` | Compile and run all freestanding C++ program tests |
@@ -12,6 +13,7 @@
 | `run_program_trace.sh` | Like `run_program.sh` but with pipeline trace output |
 | `lint_generated_sv.sh` | Verilator lint for generated SystemVerilog |
 | `lint_fpga_rtl.sh` | Export and lint the Genesys 2 FPGA RTL wrapper/core |
+| `lint_fpga_bram_rtl.sh` | Export and lint the BRAM-backed Genesys 2 wrapper/core |
 | `run_xv6_smoke.sh` | Boot xv6 with explicit kernel/fs image paths and stop once the shell prompt appears |
 | `check_fpga_boundary.sh` | Ensure simulation-backed services are documented and stale harness patches stay removed |
 | `verify_all.sh` | Guarded build plus ISA and C++ regressions |

@@ -38,6 +38,9 @@ run_with_timeout "$VERIFY_TEST_TIMEOUT" "$ROOT/scripts/lint_generated_sv.sh"
 echo "[verify] FPGA RTL export/lint"
 run_with_timeout "$VERIFY_TEST_TIMEOUT" "$ROOT/scripts/lint_fpga_rtl.sh"
 
+echo "[verify] FPGA BRAM bring-up export/lint"
+run_with_timeout "$VERIFY_TEST_TIMEOUT" "$ROOT/scripts/lint_fpga_bram_rtl.sh"
+
 if [ "${RUN_XV6:-0}" = "1" ]; then
   echo "[verify] xv6 smoke"
   run_with_timeout "${VERIFY_XV6_TIMEOUT:-5m}" "$ROOT/scripts/run_xv6_smoke.sh"

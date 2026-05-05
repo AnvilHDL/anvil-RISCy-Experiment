@@ -39,6 +39,14 @@ current core exposes fetch/load data registers and store commit side channels;
 `sim/sim_main.cpp` models memory only for Verilator. The FPGA path must attach
 real BRAM/DDR and MMIO hardware rather than relying on simulator memory.
 
+The BRAM bring-up target (`fpga/src/risky_genesys2_bram_top.sv`) is the first
+board-facing software execution step. It uses a generated
+`pipeline_core_bram_if` wrapper, a small synthesizable BRAM, and an LED MMIO
+store path so a tiny bare-metal program can execute on Genesys 2 without adding
+large memories to Anvil. This is still not the xv6 SoC; it is the bounded
+hardware bridge used before UART, DDR, interrupts, storage, and RTL Sv39 are
+added.
+
 ## Robust Verification Entry Point
 
 Use:
@@ -72,7 +80,10 @@ Use:
 ```bash
 scripts/export_fpga_rtl.sh
 scripts/lint_fpga_rtl.sh
+scripts/export_fpga_bram_rtl.sh
+scripts/lint_fpga_bram_rtl.sh
 cd fpga && make check
+cd fpga && make bram
 cd fpga && make synth
 ```
 
@@ -102,12 +113,13 @@ until capability state is migrated in bounded scalarized RTL slices.
 ## FPGA Milestones
 
 1. Keep `scripts/verify_all.sh` passing on every change.
-2. Add a synthesizable memory interface and replace `host_mem[]` assumptions.
-3. Add an RTL Sv39 TLB/PTW with bounded multi-cycle stalls.
-4. Add UART, PLIC, and external interrupt paths in RTL or behind a real bus.
-5. Decide the FPGA storage path for xv6 filesystem access.
-6. Run xv6 in Verilator without simulation-only architectural patches.
-7. Add synthesis constraints, BRAM mapping, clocks/resets, and timing closure.
+2. Run the BRAM-backed LED MMIO target on Genesys 2.
+3. Replace the generated BRAM bridge with a first-class Anvil memory interface.
+4. Add an RTL Sv39 TLB/PTW with bounded multi-cycle stalls.
+5. Add UART, PLIC, and external interrupt paths in RTL or behind a real bus.
+6. Decide the FPGA storage path for xv6 filesystem access.
+7. Run xv6 in Verilator without simulation-only architectural patches.
+8. Add synthesis constraints, DDR mapping, clocks/resets, and timing closure.
 
 Any feature that depends on the C++ harness should be marked simulation-backed
 until the corresponding RTL replacement exists and is covered by tests.

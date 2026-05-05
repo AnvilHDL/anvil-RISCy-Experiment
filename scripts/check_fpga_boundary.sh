@@ -75,13 +75,16 @@ require_pattern "capability RF RTL replacement" "RTL capability RF" "FPGA_READIN
 require_pattern "xv6 smoke environment" "RUN_XV6=1" "FPGA_READINESS.md"
 require_pattern "Genesys 2 target" "Genesys 2" "FPGA_READINESS.md"
 require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "FPGA_READINESS.md"
+require_pattern "BRAM bring-up target" "BRAM bring-up target" "FPGA_READINESS.md"
 require_pattern "no demo RTL memories policy" "should not contain demo instruction/data memories" "FPGA_READINESS.md"
 require_pattern "wrapper non-production behavior" "UART is electrically idle" "FPGA_READINESS.md"
 require_pattern "Capstone RTL gap" "cap_result.*zeroed" "FPGA_READINESS.md"
 
 require_pattern "Genesys 2 constraints" "XC7K325T-2FFG900C" "fpga/constraints/genesys2.xdc"
 require_pattern "Genesys 2 wrapper honesty" "synthesis smoke target" "fpga/src/risky_genesys2_top.sv"
+require_pattern "BRAM wrapper core bridge" "pipeline_core_bram_if" "fpga/src/risky_genesys2_bram_top.sv"
 require_absent_pattern "ambiguous placeholder language in FPGA wrapper" "dummy|placeholder|TODO|FIXME|HACK" "fpga/src/risky_genesys2_top.sv"
+require_absent_pattern "ambiguous placeholder language in BRAM wrapper" "dummy|placeholder|TODO|FIXME|HACK" "fpga/src/risky_genesys2_bram_top.sv"
 require_absent_file "demo instruction memory RTL file" "src/core/fetch/imem.anvil"
 require_absent_pattern "demo instruction memory RTL import" "demo_imem|Hand-written instruction memory|fetch/imem" "src/core/top/pipeline_core.anvil"
 

@@ -10,15 +10,18 @@ platform, so this target keeps the repo layout familiar for future comparison.
 
 ## Current Target
 
-The current FPGA target is a synthesis smoke wrapper:
+The current FPGA targets are:
 
 - `fpga/src/risky_genesys2_top.sv`
+- `fpga/src/risky_genesys2_bram_top.sv`
 - `fpga/constraints/genesys2.xdc`
 - `fpga/scripts/vivado_synth_genesys2.tcl`
 
-It packages the generated `pipeline_core` RTL behind Genesys 2 clock/reset,
-LED, fan, and UART-idle pins. This proves the Anvil-generated processor can be
-exported into a Vivado project without running Verilator.
+The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
+clock/reset, LED, fan, and UART-idle pins. The BRAM wrapper packages a generated
+`pipeline_core_bram_if` bridge with a small synthesizable memory and LED MMIO
+store path for the first bare-metal board execution target. Both flows avoid
+large Anvil memories so RTL export stays bounded.
 
 This is not yet a full FPGA SoC capable of booting xv6 on the board. xv6 still
 depends on simulation-backed RAM, Sv39 PTW, UART/PLIC/virtio, and disk behavior.
@@ -34,8 +37,14 @@ scripts/export_fpga_rtl.sh
 # Lint the exported wrapper/core before opening Vivado.
 scripts/lint_fpga_rtl.sh
 
+# Export and lint the BRAM-backed bare-metal target.
+scripts/lint_fpga_bram_rtl.sh
+
 # Check Genesys 2 prerequisites.
 cd fpga && make check
+
+# Export/lint the BRAM-backed bare-metal target via Make.
+cd fpga && make bram
 
 # Run Vivado synthesis smoke when Vivado is installed/sourced.
 cd fpga && make synth
@@ -55,12 +64,13 @@ Useful environment variables:
 ## Why This Is the First FPGA Step
 
 The current simulation harness owns several services that real FPGA hardware
-must eventually own. A small synthesis wrapper is still useful because it:
+must eventually own. The smoke and BRAM wrappers are still useful because they:
 
 - verifies Anvil export without Verilator or host C++ dependencies,
 - gives Vivado a real Genesys 2 part, top module, and constraints,
 - keeps the FPGA flow bounded so failed builds terminate,
-- creates a stable place to add RAM, UART, PLIC, and storage peripherals.
+- creates a stable place to add RAM, UART, PLIC, and storage peripherals,
+- proves a tiny store-to-MMIO program can execute before the full xv6 SoC exists.
 
 ## Next Hardware Milestones
 

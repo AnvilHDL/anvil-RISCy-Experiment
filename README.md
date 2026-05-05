@@ -151,11 +151,12 @@ RISCy-Experiment/
 ├── fpga/
 │   ├── constraints/genesys2.xdc # Genesys 2 board constraints
 │   ├── scripts/                 # Vivado check/synthesis scripts
-│   └── src/risky_genesys2_top.sv # Genesys 2 synthesis smoke wrapper
+│   └── src/                     # Genesys 2 synthesis and BRAM bring-up wrappers
 ├── scripts/
 │   ├── build.sh              # Anvil → SystemVerilog → Verilator → binary
 │   ├── build_program_sim.sh  # Rebuild the ELF-loading simulator
 │   ├── export_fpga_rtl.sh    # Bounded Anvil RTL export for FPGA flows
+│   ├── export_fpga_bram_rtl.sh # Export BRAM-backed bare-metal FPGA target
 │   ├── run_riscv_tests.sh    # Run all ISA regression tests
 │   ├── run_program_tests.sh  # Run all freestanding C++ program tests
 │   ├── verify_all.sh         # No-hang build + regression entry point
@@ -201,6 +202,9 @@ RUN_XV6=1 XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
 # Export RTL and run Genesys 2 FPGA synthesis smoke when Vivado is available
 scripts/export_fpga_rtl.sh
 cd fpga && make synth
+
+# Export and lint the BRAM-backed bare-metal Genesys 2 bring-up target
+cd fpga && make bram
 
 # Boot xv6 (requires xv6-riscv built with NCPU=1, PHYSTOP=0x80800000)
 build/pipeline_core/obj_dir/Vpipeline_core \
