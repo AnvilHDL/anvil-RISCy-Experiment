@@ -9,24 +9,47 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$1"
 OUT="${2:-${SRC%.cpp}.elf}"
-
-COMMON_FLAGS=(
-  -march="${RISCV_MARCH:-rv64im}"
-  -mabi="${RISCV_MABI:-lp64}"
-  -mcmodel=medany
-  -nostdlib
-  -O1
-  -ffreestanding
-  -fno-exceptions
-  -fno-rtti
-)
+: "${RISCV_MABI:=lp64}"
 
 if command -v riscv64-unknown-elf-g++ >/dev/null 2>&1; then
+  if [ -z "${RISCV_MARCH:-}" ]; then
+    for candidate in rv64im_zicsr rv64im; do
+      if printf 'int main() { return 0; }\n' | \
+        riscv64-unknown-elf-g++ -x c++ -march="$candidate" -mabi="$RISCV_MABI" \
+          -nostdlib -ffreestanding -fno-exceptions -fno-rtti -c -o /dev/null - \
+          >/dev/null 2>&1; then
+        RISCV_MARCH="$candidate"
+        break
+      fi
+    done
+    : "${RISCV_MARCH:=rv64im}"
+  fi
+  COMMON_FLAGS=(
+    -march="$RISCV_MARCH"
+    -mabi="$RISCV_MABI"
+    -mcmodel=medany
+    -nostdlib
+    -O1
+    -ffreestanding
+    -fno-exceptions
+    -fno-rtti
+  )
   riscv64-unknown-elf-g++ \
     "${COMMON_FLAGS[@]}" \
     -T "$ROOT/sim/link.ld" \
     "$ROOT/sim/startup.S" "$SRC" -o "$OUT"
 else
+  : "${RISCV_MARCH:=rv64im_zicsr}"
+  COMMON_FLAGS=(
+    -march="$RISCV_MARCH"
+    -mabi="$RISCV_MABI"
+    -mcmodel=medany
+    -nostdlib
+    -O1
+    -ffreestanding
+    -fno-exceptions
+    -fno-rtti
+  )
   clang++ \
     --target=riscv64-unknown-elf \
     -fuse-ld=lld \

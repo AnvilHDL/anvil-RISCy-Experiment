@@ -99,10 +99,12 @@ and disk simulation services with synthesizable hardware.
 
 Current non-production wrapper behavior:
 
-- `tx` is held high so UART is electrically idle.
 - `fan_pwm` is held high so the board fan remains enabled.
-- LEDs show reset, heartbeat, and RX pin state.
-- No real memory, UART, interrupt, storage, or boot-loader hardware is attached.
+- the BRAM wrapper owns a tiny UART TX-only debug path at 115200 baud.
+- BRAM bring-up emits `BOOT\r\n`, forwards byte stores at `0x10000008`,
+  and reports LED MMIO writes as `L=<byte>\r\n`.
+- LEDs show reset, heartbeat, and the low six bits of the LED MMIO byte.
+- No real UART RX, interrupt, storage, or boot-loader hardware is attached.
 
 These are acceptable for synthesis smoke only. Do not claim board software
 execution until the wrapper is extended into a real SoC.

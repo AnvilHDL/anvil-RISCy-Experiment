@@ -55,7 +55,9 @@ text = text.replace(
     "  output logic[63:0] mem_addr_o,\n"
     "  output logic[0:0] mem_store_valid_o,\n"
     "  output logic[63:0] mem_store_addr_o,\n"
-    "  output logic[63:0] mem_store_word_o\n"
+    "  output logic[63:0] mem_store_word_o,\n"
+    "  output logic[0:0] sim_exit_valid_o,\n"
+    "  output logic[63:0] sim_exit_code_o\n"
     ");",
     1,
 )
@@ -68,6 +70,8 @@ text = text.replace(
     "  assign mem_store_valid_o = mem_store_valid_q_q;\n"
     "  assign mem_store_addr_o = mem_store_addr_q_q;\n"
     "  assign mem_store_word_o = mem_store_word_q_q;\n"
+    "  assign sim_exit_valid_o = sim_exit_valid_q_q;\n"
+    "  assign sim_exit_code_o = sim_exit_code_q_q;\n"
     "endmodule",
     1,
 )

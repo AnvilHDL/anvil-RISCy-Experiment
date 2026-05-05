@@ -21,9 +21,9 @@ The current FPGA targets are:
 
 The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
 clock/reset, LED, fan, and UART-idle pins. The BRAM wrapper packages a generated
-`pipeline_core_bram_if` bridge with a small synthesizable memory and LED MMIO
-store path for the first bare-metal board execution target. Both flows avoid
-large Anvil memories so RTL export stays bounded.
+`pipeline_core_bram_if` bridge with a small synthesizable memory, LED MMIO,
+and a tiny UART TX debug path for the first bare-metal board execution target.
+Both flows avoid large Anvil memories so RTL export stays bounded.
 
 This is not yet a full FPGA SoC capable of booting xv6 on the board. xv6 still
 depends on simulation-backed RAM, Sv39 PTW, UART/PLIC/virtio, and disk behavior.
@@ -101,6 +101,18 @@ Expected first-board behavior for the BRAM target:
 - `led[0]` turns on after reset is released.
 - `led[1]` blinks as a heartbeat.
 - `led[7:2]` show the lower six bits of the bare-metal LED MMIO store.
+- the PROG/UART USB port emits `BOOT\r\n` at 115200 baud.
+- the BRAM demo program emits `B` over the same UART path.
+- every LED MMIO store also emits `L=<byte>\r\n`.
+
+To watch the BRAM UART stream on the laptop attached to the board, open the
+PROG/UART serial port at 115200 8N1 after programming. On Linux this is usually
+one of `/dev/ttyUSB0` or `/dev/ttyUSB1`; identify the quiet port with:
+
+```bash
+dmesg | tail -50
+python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
+```
 
 ## Why This Is the First FPGA Step
 

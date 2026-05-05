@@ -6,13 +6,24 @@ ISA_DIR="$ROOT/tests/isa"
 : "${SIM_BIN:="$ROOT/build/pipeline_core_program/obj_dir/Vpipeline_core"}"
 : "${TEST_COMPILE_TIMEOUT:=30s}"
 : "${TEST_RUN_TIMEOUT:=30s}"
-: "${RISCV_MARCH:=rv64im}"
 : "${RISCV_MABI:=lp64}"
 
 if command -v riscv64-unknown-elf-g++ >/dev/null 2>&1; then
   TEST_CXX=(riscv64-unknown-elf-g++)
 else
   TEST_CXX=(clang++ --target=riscv64-unknown-elf -fuse-ld=lld)
+fi
+
+if [ -z "${RISCV_MARCH:-}" ]; then
+  for candidate in rv64im_zicsr rv64im; do
+    if printf '.text\ncsrr a0, mstatus\n' | \
+      "${TEST_CXX[@]}" -x assembler -march="$candidate" -mabi="$RISCV_MABI" \
+      -c -o /dev/null - >/dev/null 2>&1; then
+      RISCV_MARCH="$candidate"
+      break
+    fi
+  done
+  : "${RISCV_MARCH:=rv64im}"
 fi
 
 run_with_timeout() {

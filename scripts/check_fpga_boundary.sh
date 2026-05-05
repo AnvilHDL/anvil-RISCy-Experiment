@@ -77,7 +77,7 @@ require_pattern "Genesys 2 target" "Genesys 2" "FPGA_READINESS.md"
 require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "FPGA_READINESS.md"
 require_pattern "BRAM bring-up target" "BRAM bring-up target" "FPGA_READINESS.md"
 require_pattern "no demo RTL memories policy" "should not contain demo instruction/data memories" "FPGA_READINESS.md"
-require_pattern "wrapper non-production behavior" "UART is electrically idle" "FPGA_READINESS.md"
+require_pattern "wrapper non-production behavior" "UART TX-only debug path" "FPGA_READINESS.md"
 require_pattern "Capstone RTL gap" "cap_result.*zeroed" "FPGA_READINESS.md"
 
 require_pattern "Genesys 2 constraints" "XC7K325T-2FFG900C" "fpga/constraints/genesys2.xdc"
