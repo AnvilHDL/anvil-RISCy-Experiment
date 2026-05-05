@@ -6,6 +6,14 @@ ISA_DIR="$ROOT/tests/isa"
 : "${SIM_BIN:="$ROOT/build/pipeline_core_program/obj_dir/Vpipeline_core"}"
 : "${TEST_COMPILE_TIMEOUT:=30s}"
 : "${TEST_RUN_TIMEOUT:=30s}"
+: "${RISCV_MARCH:=rv64im}"
+: "${RISCV_MABI:=lp64}"
+
+if command -v riscv64-unknown-elf-g++ >/dev/null 2>&1; then
+  TEST_CXX=(riscv64-unknown-elf-g++)
+else
+  TEST_CXX=(clang++ --target=riscv64-unknown-elf -fuse-ld=lld)
+fi
 
 run_with_timeout() {
   local limit="$1"
@@ -36,11 +44,9 @@ for s_file in "$ISA_DIR"/*.S; do
   printf "%-15s " "$t_name..."
   
   # Compile
-  if ! run_with_timeout "$TEST_COMPILE_TIMEOUT" clang++ \
-    --target=riscv64-unknown-elf \
-    -fuse-ld=lld \
-    -march=rv64im_zicsr \
-    -mabi=lp64 \
+  if ! run_with_timeout "$TEST_COMPILE_TIMEOUT" "${TEST_CXX[@]}" \
+    -march="$RISCV_MARCH" \
+    -mabi="$RISCV_MABI" \
     -nostdlib \
     -ffreestanding \
     -fno-exceptions \

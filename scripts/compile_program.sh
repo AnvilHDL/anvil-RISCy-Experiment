@@ -11,8 +11,8 @@ SRC="$1"
 OUT="${2:-${SRC%.cpp}.elf}"
 
 COMMON_FLAGS=(
-  -march=rv64im_zicsr
-  -mabi=lp64
+  -march="${RISCV_MARCH:-rv64im}"
+  -mabi="${RISCV_MABI:-lp64}"
   -mcmodel=medany
   -nostdlib
   -O1

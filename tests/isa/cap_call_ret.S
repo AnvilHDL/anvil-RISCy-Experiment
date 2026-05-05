@@ -49,10 +49,11 @@ RVTEST_CODE_BEGIN
 
   # ── Test 2: RETURN on SEALED_RET cap — type transform + PC redirect ────────
   # Build a new SEALED_RET cap c5 whose cursor points to return_target below.
-  # Use CALL on c2 (LINEAR → no redirect) with scalar_arg = return_target address.
-  # `auipc t0, 0` + `addi t0, t0, 24` gives t0 = return_target (6 instrs × 4 B).
-  auipc t0, 0        # t0 = address of this instruction
-  addi  t0, t0, 28   # t0 = return_target (28 bytes ahead: CALL+li_a1_x2+RETURN+j_fail)
+  # Use a PC-relative relocation instead of a hand-counted byte offset so the
+  # target stays correct across assembler/toolchain differences.
+1:
+  auipc t0, %pcrel_hi(return_target)
+  addi  t0, t0, %pcrel_lo(1b)
 
   # CALL c5=x5, rs1=c2=x2, rs2=t0=x5: c5 = SEALED_RET(cursor=return_target), no redirect
   # (0x0E<<27)|(5<<20)|(2<<15)|(0<<12)|(5<<7)|0x0B
