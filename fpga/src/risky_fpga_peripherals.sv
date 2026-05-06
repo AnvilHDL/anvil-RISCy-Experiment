@@ -84,6 +84,7 @@ module risky_fpga_peripherals #(
     wire [2:0] mem_byte_off = mem_addr_i[2:0];
     wire [3:0] mem_reg_off = mem_addr_i[3:0];
     wire [3:0] store_reg_off = store_addr_i[3:0];
+    wire [7:0] store_byte = mmio_store_byte(store_addr_i, store_data_i);
     wire [7:0] uart_lsr = {
         1'b0,
         uart_thr_empty,
@@ -187,38 +188,38 @@ module risky_fpga_peripherals #(
                 case (store_reg_off)
                     4'h0: begin
                         if (uart_dlab) begin
-                            uart_dll_q <= mmio_store_byte(store_addr_i, store_data_i);
+                            uart_dll_q <= store_byte;
                         end else if (!tx_fifo_full) begin
                             tx_push_q <= 1'b1;
                             tx_push_addr_q <= tx_wr_ptr_q;
-                            tx_push_data_q <= mmio_store_byte(store_addr_i, store_data_i);
+                            tx_push_data_q <= store_byte;
                             tx_wr_ptr_q <= tx_wr_ptr_q + {{(UART_PTR_W-1){1'b0}}, 1'b1};
                             tx_count_q <= tx_count_q + {{(UART_COUNT_W-1){1'b0}}, 1'b1};
                         end
                     end
                     4'h1: begin
                         if (uart_dlab) begin
-                            uart_dlm_q <= mmio_store_byte(store_addr_i, store_data_i);
+                            uart_dlm_q <= store_byte;
                         end else begin
-                            uart_ier_q[3:0] <= mmio_store_byte(store_addr_i, store_data_i)[3:0];
+                            uart_ier_q[3:0] <= store_byte[3:0];
                         end
                     end
                     4'h2: begin
-                        uart_fcr_q <= mmio_store_byte(store_addr_i, store_data_i);
-                        if (mmio_store_byte(store_addr_i, store_data_i)[1]) begin
+                        uart_fcr_q <= store_byte;
+                        if (store_byte[1]) begin
                             rx_wr_ptr_q <= '0;
                             rx_rd_ptr_q <= '0;
                             rx_count_q <= '0;
                         end
-                        if (mmio_store_byte(store_addr_i, store_data_i)[2]) begin
+                        if (store_byte[2]) begin
                             tx_wr_ptr_q <= '0;
                             tx_rd_ptr_q <= '0;
                             tx_count_q <= '0;
                         end
                     end
-                    4'h3: uart_lcr_q <= mmio_store_byte(store_addr_i, store_data_i);
-                    4'h4: uart_mcr_q <= mmio_store_byte(store_addr_i, store_data_i);
-                    4'h7: uart_scr_q <= mmio_store_byte(store_addr_i, store_data_i);
+                    4'h3: uart_lcr_q <= store_byte;
+                    4'h4: uart_mcr_q <= store_byte;
+                    4'h7: uart_scr_q <= store_byte;
                     default: begin end
                 endcase
             end
