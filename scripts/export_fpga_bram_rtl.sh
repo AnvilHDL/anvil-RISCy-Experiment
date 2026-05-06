@@ -7,6 +7,8 @@ CORE_SRC="$FPGA_OUT_DIR/pipeline_core.sv"
 PATCHED_CORE="$FPGA_OUT_DIR/pipeline_core_bram_if.sv"
 BRAM_WRAPPER_SRC="$ROOT/fpga/src/risky_genesys2_bram_top.sv"
 BRAM_WRAPPER_OUT="$FPGA_OUT_DIR/risky_genesys2_bram_top.sv"
+BRAM_ADAPTER_SRC="$ROOT/fpga/src/risky_bram_mem_adapter.sv"
+BRAM_ADAPTER_OUT="$FPGA_OUT_DIR/risky_bram_mem_adapter.sv"
 PERIPH_SRC="$ROOT/fpga/src/risky_fpga_peripherals.sv"
 PERIPH_OUT="$FPGA_OUT_DIR/risky_fpga_peripherals.sv"
 UART_TX_SRC="$ROOT/fpga/src/risky_uart_tx.sv"
@@ -25,7 +27,7 @@ if [ ! -r "$CORE_SRC" ]; then
   echo "[fpga-bram] missing generated core: $CORE_SRC" >&2
   exit 1
 fi
-if [ ! -r "$BRAM_WRAPPER_SRC" ]; then
+if [ ! -r "$BRAM_WRAPPER_SRC" ] || [ ! -r "$BRAM_ADAPTER_SRC" ]; then
   echo "[fpga-bram] missing BRAM wrapper: $BRAM_WRAPPER_SRC" >&2
   exit 1
 fi
@@ -174,6 +176,7 @@ if ! rg -q "= mem_rdata_i;" "$PATCHED_CORE"; then
 fi
 
 cp "$BRAM_WRAPPER_SRC" "$BRAM_WRAPPER_OUT"
+cp "$BRAM_ADAPTER_SRC" "$BRAM_ADAPTER_OUT"
 cp "$PERIPH_SRC" "$PERIPH_OUT"
 cp "$UART_TX_SRC" "$UART_TX_OUT"
 cp "$UART_RX_SRC" "$UART_RX_OUT"
@@ -183,6 +186,7 @@ python3 "$ROOT/scripts/gen_fpga_bram_init.py" \
 
 {
   echo "$BRAM_WRAPPER_OUT"
+  echo "$BRAM_ADAPTER_OUT"
   echo "$PERIPH_OUT"
   echo "$UART_TX_OUT"
   echo "$UART_RX_OUT"

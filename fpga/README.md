@@ -20,11 +20,11 @@ The current FPGA targets are:
 - `fpga/scripts/program_bram_genesys2.tcl`
 
 The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
-clock/reset, LED, fan, and UART pins. The BRAM wrapper packages a generated
-`pipeline_core_bram_if` bridge with a small synthesizable memory and a separate
-FPGA peripheral block for LED, NS16550-style UART, minimal PLIC, CLINT readback,
-and external interrupt injection. Both flows avoid large Anvil memories so RTL
-export stays bounded.
+clock/reset, LED, fan, and UART pins. The BRAM wrapper now packages a generated
+`pipeline_core_bram_if` bridge behind an explicit BRAM request/response adapter
+plus a separate FPGA peripheral block for LED, NS16550-style UART, minimal PLIC,
+CLINT readback, and external interrupt injection. Both flows avoid large Anvil
+memories so RTL export stays bounded.
 
 This is not yet a full FPGA SoC capable of booting xv6 on the board. xv6 still
 depends on simulation-backed RAM, full RTL Sv39 PTW/TLB attachment, virtio, and
@@ -141,12 +141,13 @@ must eventually own. The smoke and BRAM wrappers are still useful because they:
 2. Move RAM behind a synthesizable BRAM or AXI-attached memory subsystem.
 3. Split the BRAM-side FPGA peripheral block into a bus-facing UART/GPIO/timer
    block rather than board-top glue.
-4. Replace the current BRAM-side exported Sv39 signals with a fully attached RTL
-   PTW/TLB block on a shared memory interface.
-5. Replace the BRAM-only memory path with a DDR/MIG-backed memory subsystem.
-6. Choose the xv6 disk path: SD-card SPI, UART loader, debug bridge, or host
+4. Replace the current BRAM adapter's always-ready local memory path with a
+   stall-capable shared memory interface.
+5. Attach an RTL Sv39 PTW/TLB block to that shared interface.
+6. Replace the BRAM-only memory path with a DDR/MIG-backed memory subsystem.
+7. Choose the xv6 disk path: SD-card SPI, UART loader, debug bridge, or host
    bridge.
-7. Replace BRAM-only memory with a wider memory subsystem and run xv6 on it.
+8. Replace BRAM-only memory with a wider memory subsystem and run xv6 on it.
 
 ## Toolchain Note
 

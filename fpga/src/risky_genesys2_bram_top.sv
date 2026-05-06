@@ -20,7 +20,6 @@ module risky_genesys2_bram_top (
 );
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
     localparam int RAM_WORDS = 1024;
-    localparam logic [63:0] RAM_WORDS_64 = 64'd1024;
     localparam int CORE_CLK_HZ = 25_000_000;
     localparam int UART_BAUD = 115200;
     localparam int UART_FIFO_DEPTH = 64;
@@ -111,7 +110,14 @@ module risky_genesys2_bram_top (
     wire rst_ni = reset_sync[7];
 
     wire [63:0] core_pc;
+    wire        core_if_req_valid;
+    wire [63:0] core_if_req_addr;
     wire [63:0] core_mem_addr;
+    wire        core_mem_req_valid;
+    wire [63:0] core_mem_req_addr;
+    wire        core_mem_req_write;
+    wire [63:0] core_mem_req_wdata;
+    wire [2:0]  core_mem_req_width;
     wire        core_mem_read;
     wire        core_mem_write;
     wire        core_mmio_read_valid;
@@ -139,83 +145,26 @@ module risky_genesys2_bram_top (
     wire        sv39_mem_pf;
     wire        sv39_mem_pf_store;
 
-    (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
-    reg [63:0] fetch_word_q = 64'h0000_0013_0000_0013;
-    reg [63:0] mem_word_q = 64'd0;
-    reg [63:0] mmio_word_q = 64'd0;
     reg [31:0] heartbeat_q = 32'd0;
-    reg        fetch_valid_q = 1'b0;
 
-    reg [2:0] pc_byte_idx_q = 3'd0;
-    reg       mem_in_ram_q = 1'b0;
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
     reg       core_store_valid_q = 1'b0;
-    (* DONT_TOUCH = "true" *) reg [9:0] bram_store_word_idx_q = 10'd0;
-    (* DONT_TOUCH = "true" *) reg [63:0] bram_store_word_q = 64'd0;
-    (* DONT_TOUCH = "true" *) reg       bram_store_we_q = 1'b0;
 
     wire [63:0] mmio_rdata;
     wire [7:0] led_state;
-    wire [63:0] pc_offset = core_pc - RAM_BASE;
-    wire [9:0] pc_word_idx = pc_offset[12:3];
-    wire pc_in_ram = (pc_offset >> 3) < RAM_WORDS_64;
-    wire [63:0] mem_offset = core_mem_addr - RAM_BASE;
-    wire [9:0] mem_word_idx = mem_offset[12:3];
-    wire mem_in_ram = (mem_offset >> 3) < RAM_WORDS_64;
-    wire [63:0] store_offset = core_store_addr - RAM_BASE;
-    wire [9:0] store_word_idx = store_offset[12:3];
-    wire store_in_ram = (store_offset >> 3) < RAM_WORDS_64;
-
-    assign core_imem_rdata = fetch_valid_q
-        ? (pc_byte_idx_q[2] ? fetch_word_q[63:32] : fetch_word_q[31:0])
-        : 32'h0000_0013;
-    assign core_mem_rdata = mem_in_ram_q ? mem_word_q : mmio_word_q;
-
-    integer i;
-    initial begin
-        for (i = 0; i < RAM_WORDS; i = i + 1) begin
-            bram[i] = 64'h0000_0013_0000_0013;
-        end
-`include "risky_genesys2_bram_init.vh"
-    end
+    wire [31:0] adapter_imem_rdata;
+    wire [63:0] adapter_mem_rdata;
 
     always @(posedge clk_core) begin
         if (!rst_ni) begin
-            pc_byte_idx_q <= 3'd0;
-            mem_in_ram_q <= 1'b1;
             core_store_addr_q <= RAM_BASE;
             core_store_word_q <= 64'd0;
             core_store_valid_q <= 1'b0;
-            bram_store_word_idx_q <= 10'd0;
-            bram_store_word_q <= 64'd0;
-            bram_store_we_q <= 1'b0;
-            fetch_valid_q <= 1'b0;
         end else begin
-            pc_byte_idx_q <= core_pc[2:0];
-            mem_in_ram_q <= mem_in_ram;
             core_store_addr_q <= core_store_addr;
             core_store_word_q <= core_store_word;
             core_store_valid_q <= core_store_valid;
-            bram_store_word_idx_q <= store_word_idx;
-            bram_store_word_q <= core_store_word;
-            bram_store_we_q <= core_store_valid && store_in_ram;
-            fetch_valid_q <= 1'b1;
-        end
-    end
-
-    always @(posedge clk_core) begin
-        if (!rst_ni) begin
-            fetch_word_q <= bram[0];
-            mem_word_q <= 64'd0;
-            mmio_word_q <= 64'd0;
-        end else begin
-            fetch_word_q <= pc_in_ram ? bram[pc_word_idx] : 64'h0000_0013_0000_0013;
-            mem_word_q <= mem_in_ram ? bram[mem_word_idx] : 64'd0;
-            mmio_word_q <= mmio_rdata;
-        end
-        if (rst_ni && bram_store_we_q) begin
-            bram[bram_store_word_idx_q] <= bram_store_word_q;
         end
     end
 
@@ -242,14 +191,14 @@ module risky_genesys2_bram_top (
         .sv39_mem_pf_i      (sv39_mem_pf),
         .sv39_mem_pf_store_i(sv39_mem_pf_store),
         .pc_o               (core_pc),
-        .if_req_valid_o     (),
-        .if_req_addr_o      (),
+        .if_req_valid_o     (core_if_req_valid),
+        .if_req_addr_o      (core_if_req_addr),
         .mem_addr_o         (core_mem_addr),
-        .mem_req_valid_o    (),
-        .mem_req_addr_o     (),
-        .mem_req_write_o    (),
-        .mem_req_wdata_o    (),
-        .mem_req_width_o    (),
+        .mem_req_valid_o    (core_mem_req_valid),
+        .mem_req_addr_o     (core_mem_req_addr),
+        .mem_req_write_o    (core_mem_req_write),
+        .mem_req_wdata_o    (core_mem_req_wdata),
+        .mem_req_width_o    (core_mem_req_width),
         .mem_read_o         (core_mem_read),
         .mem_write_o        (core_mem_write),
         .mem_mmio_read_valid_o(core_mmio_read_valid),
@@ -267,6 +216,28 @@ module risky_genesys2_bram_top (
         .stimecmp_o         (core_stimecmp)
     );
 
+    risky_bram_mem_adapter #(
+        .RAM_BASE (RAM_BASE),
+        .RAM_WORDS(RAM_WORDS)
+    ) i_bram_mem_adapter (
+        .clk_i           (clk_core),
+        .rst_ni          (rst_ni),
+        .if_req_valid_i  (core_if_req_valid),
+        .if_req_addr_i   (core_if_req_addr),
+        .if_rsp_data_o   (adapter_imem_rdata),
+        .mem_req_valid_i (core_mem_req_valid),
+        .mem_req_addr_i  (core_mem_req_addr),
+        .mem_req_write_i (core_mem_req_write),
+        .mem_store_valid_i(core_store_valid_q),
+        .mem_store_addr_i(core_store_addr_q),
+        .mem_store_word_i(core_store_word_q),
+        .mmio_rdata_i    (mmio_rdata),
+        .mem_rsp_data_o  (adapter_mem_rdata)
+    );
+
+    assign core_imem_rdata = adapter_imem_rdata;
+    assign core_mem_rdata = adapter_mem_rdata;
+
     risky_fpga_peripherals #(
         .CORE_CLK_HZ(CORE_CLK_HZ),
         .UART_BAUD(UART_BAUD),
@@ -275,7 +246,7 @@ module risky_genesys2_bram_top (
         .clk_i         (clk_core),
         .rst_ni        (rst_ni),
         .rx_i          (rx),
-        .mem_addr_i    (core_mem_addr),
+        .mem_addr_i    (core_mem_req_addr),
         .mem_read_i    (core_mem_read),
         .mem_write_i   (core_mem_write),
         .mmio_read_valid_i(core_mmio_read_valid),
