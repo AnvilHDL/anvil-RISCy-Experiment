@@ -82,6 +82,9 @@ module risky_genesys2_bram_top (
     reg [6:0] uart_count_q = 7'd0;
     reg [7:0] uart_tx_data_q = 8'h00;
     reg       uart_tx_start_q = 1'b0;
+    reg       uart_fifo_push_q = 1'b0;
+    reg [5:0] uart_fifo_push_addr_q = 6'd0;
+    reg [7:0] uart_fifo_push_data_q = 8'h00;
 
     reg       boot_banner_active_q = 1'b0;
     reg [2:0] boot_banner_idx_q = 3'd0;
@@ -114,6 +117,7 @@ module risky_genesys2_bram_top (
 
     wire uart_fifo_empty = uart_count_q == 7'd0;
     wire uart_fifo_full = uart_count_q == UART_FIFO_DEPTH_7;
+    wire uart_tx_busy;
 
     assign core_imem_rdata = pc_byte_idx[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
     assign core_mem_rdata = mem_word_q;
@@ -144,6 +148,9 @@ module risky_genesys2_bram_top (
         if (core_store_valid_safe && store_in_ram) begin
             bram[store_word_idx] <= core_store_word_safe;
         end
+        if (uart_fifo_push_q) begin
+            uart_fifo[uart_fifo_push_addr_q] <= uart_fifo_push_data_q;
+        end
     end
 
     always @(posedge clk200 or negedge rst_ni) begin
@@ -155,6 +162,9 @@ module risky_genesys2_bram_top (
             uart_count_q <= 7'd0;
             uart_tx_data_q <= 8'h00;
             uart_tx_start_q <= 1'b0;
+            uart_fifo_push_q <= 1'b0;
+            uart_fifo_push_addr_q <= 6'd0;
+            uart_fifo_push_data_q <= 8'h00;
             boot_banner_active_q <= 1'b0;
             boot_banner_idx_q <= 3'd0;
             sim_exit_seen_q <= 1'b0;
@@ -165,6 +175,7 @@ module risky_genesys2_bram_top (
         end else begin
             heartbeat_q <= heartbeat_q + 32'd1;
             uart_tx_start_q <= 1'b0;
+            uart_fifo_push_q <= 1'b0;
 
             if (!boot_banner_active_q) begin
                 boot_banner_active_q <= 1'b1;
@@ -186,50 +197,52 @@ module risky_genesys2_bram_top (
             if (!uart_fifo_full) begin
                 if (boot_banner_active_q) begin
                     case (boot_banner_idx_q)
-                        3'd0: begin uart_fifo[uart_wr_ptr_q] <= "B"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd1; end
-                        3'd1: begin uart_fifo[uart_wr_ptr_q] <= "O"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd2; end
-                        3'd2: begin uart_fifo[uart_wr_ptr_q] <= "O"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd3; end
-                        3'd3: begin uart_fifo[uart_wr_ptr_q] <= "T"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd4; end
-                        3'd4: begin uart_fifo[uart_wr_ptr_q] <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd5; end
-                        3'd5: begin uart_fifo[uart_wr_ptr_q] <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; end
+                        3'd0: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "B"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd1; end
+                        3'd1: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "O"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd2; end
+                        3'd2: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "O"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd3; end
+                        3'd3: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "T"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd4; end
+                        3'd4: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd5; end
+                        3'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; end
                         default: boot_banner_active_q <= 1'b0;
                     endcase
                 end else if (core_store_valid_safe && core_store_addr_safe == UART_MMIO) begin
-                    uart_fifo[uart_wr_ptr_q] <= core_store_word_safe[7:0];
+                    uart_fifo_push_q <= 1'b1;
+                    uart_fifo_push_addr_q <= uart_wr_ptr_q;
+                    uart_fifo_push_data_q <= core_store_word_safe[7:0];
                     uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1;
                     uart_count_q <= uart_count_q + 7'd1;
                 end else if (led_msg_state_q != 4'd0) begin
                     case (led_msg_state_q)
-                        4'd1: begin uart_fifo[uart_wr_ptr_q] <= "L"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd2; end
-                        4'd2: begin uart_fifo[uart_wr_ptr_q] <= "="; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd3; end
-                        4'd3: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(led_msg_byte_q[7:4]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd4; end
-                        4'd4: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(led_msg_byte_q[3:0]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd5; end
-                        4'd5: begin uart_fifo[uart_wr_ptr_q] <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd6; end
-                        4'd6: begin uart_fifo[uart_wr_ptr_q] <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd0; end
+                        4'd1: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "L"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd2; end
+                        4'd2: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "="; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd3; end
+                        4'd3: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(led_msg_byte_q[7:4]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd4; end
+                        4'd4: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(led_msg_byte_q[3:0]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd5; end
+                        4'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd6; end
+                        4'd6: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; led_msg_state_q <= 4'd0; end
                         default: led_msg_state_q <= 4'd0;
                     endcase
                 end else if (exit_msg_state_q != 5'd0) begin
                     case (exit_msg_state_q)
-                        5'd1: begin uart_fifo[uart_wr_ptr_q] <= "X"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd2; end
-                        5'd2: begin uart_fifo[uart_wr_ptr_q] <= "="; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd3; end
-                        5'd3: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[63:60]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd4; end
-                        5'd4: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[59:56]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd5; end
-                        5'd5: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[55:52]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd6; end
-                        5'd6: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[51:48]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd7; end
-                        5'd7: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[47:44]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd8; end
-                        5'd8: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[43:40]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd9; end
-                        5'd9: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[39:36]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd10; end
-                        5'd10: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[35:32]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd11; end
-                        5'd11: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[31:28]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd12; end
-                        5'd12: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[27:24]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd13; end
-                        5'd13: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[23:20]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd14; end
-                        5'd14: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[19:16]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd15; end
-                        5'd15: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[15:12]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd16; end
-                        5'd16: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[11:8]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd17; end
-                        5'd17: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[7:4]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd18; end
-                        5'd18: begin uart_fifo[uart_wr_ptr_q] <= hex_ascii(exit_code_latched_q[3:0]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd19; end
-                        5'd19: begin uart_fifo[uart_wr_ptr_q] <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd20; end
-                        5'd20: begin uart_fifo[uart_wr_ptr_q] <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd0; end
+                        5'd1: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "X"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd2; end
+                        5'd2: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "="; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd3; end
+                        5'd3: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[63:60]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd4; end
+                        5'd4: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[59:56]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd5; end
+                        5'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[55:52]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd6; end
+                        5'd6: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[51:48]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd7; end
+                        5'd7: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[47:44]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd8; end
+                        5'd8: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[43:40]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd9; end
+                        5'd9: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[39:36]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd10; end
+                        5'd10: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[35:32]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd11; end
+                        5'd11: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[31:28]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd12; end
+                        5'd12: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[27:24]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd13; end
+                        5'd13: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[23:20]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd14; end
+                        5'd14: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[19:16]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd15; end
+                        5'd15: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[15:12]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd16; end
+                        5'd16: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[11:8]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd17; end
+                        5'd17: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[7:4]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd18; end
+                        5'd18: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= hex_ascii(exit_code_latched_q[3:0]); uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd19; end
+                        5'd19: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd20; end
+                        5'd20: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; exit_msg_state_q <= 5'd0; end
                         default: exit_msg_state_q <= 5'd0;
                     endcase
                 end
@@ -257,8 +270,6 @@ module risky_genesys2_bram_top (
         .sim_exit_valid_o   (core_sim_exit_valid),
         .sim_exit_code_o    (core_sim_exit_code)
     );
-
-    wire uart_tx_busy;
 
     risky_uart_tx #(
         .CLKS_PER_BIT(UART_CLKS_PER_BIT)
