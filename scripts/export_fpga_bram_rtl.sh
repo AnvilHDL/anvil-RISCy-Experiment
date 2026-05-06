@@ -18,6 +18,7 @@ UART_RX_OUT="$FPGA_OUT_DIR/risky_uart_rx.sv"
 PLIC_SRC="$ROOT/fpga/src/risky_plic.sv"
 PLIC_OUT="$FPGA_OUT_DIR/risky_plic.sv"
 BRAM_INIT_SRC="$ROOT/fpga/programs/bringup_bram.S"
+BRAM_INIT_LINK="$ROOT/fpga/programs/bringup_bram.ld"
 BRAM_INIT_OUT="$FPGA_OUT_DIR/risky_genesys2_bram_init.vh"
 FILELIST="$ROOT/build/fpga/risky_genesys2_bram.f"
 
@@ -37,6 +38,10 @@ if [ ! -r "$PERIPH_SRC" ] || [ ! -r "$UART_TX_SRC" ] || [ ! -r "$UART_RX_SRC" ] 
 fi
 if [ ! -r "$BRAM_INIT_SRC" ]; then
   echo "[fpga-bram] missing BRAM bring-up program source: $BRAM_INIT_SRC" >&2
+  exit 1
+fi
+if [ ! -r "$BRAM_INIT_LINK" ]; then
+  echo "[fpga-bram] missing BRAM bring-up linker script: $BRAM_INIT_LINK" >&2
   exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -199,7 +204,7 @@ cp "$UART_TX_SRC" "$UART_TX_OUT"
 cp "$UART_RX_SRC" "$UART_RX_OUT"
 cp "$PLIC_SRC" "$PLIC_OUT"
 python3 "$ROOT/scripts/gen_fpga_bram_init.py" \
-  "$BRAM_INIT_SRC" "$ROOT/sim/link.ld" "$BRAM_INIT_OUT"
+  "$BRAM_INIT_SRC" "$BRAM_INIT_LINK" "$BRAM_INIT_OUT"
 
 {
   echo "$BRAM_WRAPPER_OUT"
