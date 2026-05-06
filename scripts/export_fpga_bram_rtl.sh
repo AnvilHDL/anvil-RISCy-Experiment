@@ -58,6 +58,15 @@ required = [
     "logic[63:0] mem_rdata_q_q;",
     "logic[63:0] ext_mip_q_q;",
     "logic[0:0] sv39_stall_q_q;",
+    "logic[0:0] if_req_valid_q_q;",
+    "logic[63:0] if_req_addr_q_q;",
+    "logic[0:0] mem_req_valid_q_q;",
+    "logic[63:0] mem_req_addr_q_q;",
+    "logic[0:0] mem_req_write_q_q;",
+    "logic[63:0] mem_req_wdata_q_q;",
+    "logic[2:0] mem_req_width_q_q;",
+    "logic[0:0] mem_mmio_read_valid_q_q;",
+    "logic[63:0] mem_mmio_read_addr_q_q;",
     "endmodule",
 ]
 missing = [pattern for pattern in required if pattern not in text]

@@ -155,6 +155,13 @@ module risky_genesys2_bram_top (
     wire [7:0] led_state;
     wire [31:0] adapter_imem_rdata;
     wire [63:0] adapter_mem_rdata;
+    (* keep = "true" *) wire _unused_req_sink = core_if_req_valid |
+        |core_if_req_addr |
+        core_mem_req_valid |
+        |core_mem_req_addr |
+        core_mem_req_write |
+        |core_mem_req_wdata |
+        |core_mem_req_width;
 
     always @(posedge clk_core) begin
         if (!rst_ni) begin
@@ -222,12 +229,12 @@ module risky_genesys2_bram_top (
     ) i_bram_mem_adapter (
         .clk_i           (clk_core),
         .rst_ni          (rst_ni),
-        .if_req_valid_i  (core_if_req_valid),
-        .if_req_addr_i   (core_if_req_addr),
+        .if_req_valid_i  (rst_ni),
+        .if_req_addr_i   (core_pc),
         .if_rsp_data_o   (adapter_imem_rdata),
-        .mem_req_valid_i (core_mem_req_valid),
-        .mem_req_addr_i  (core_mem_req_addr),
-        .mem_req_write_i (core_mem_req_write),
+        .mem_req_valid_i (core_mem_read || core_mem_write),
+        .mem_req_addr_i  (core_mem_addr),
+        .mem_req_write_i (core_mem_write),
         .mem_store_valid_i(core_store_valid_q),
         .mem_store_addr_i(core_store_addr_q),
         .mem_store_word_i(core_store_word_q),
@@ -246,7 +253,7 @@ module risky_genesys2_bram_top (
         .clk_i         (clk_core),
         .rst_ni        (rst_ni),
         .rx_i          (rx),
-        .mem_addr_i    (core_mem_req_addr),
+        .mem_addr_i    (core_mem_addr),
         .mem_read_i    (core_mem_read),
         .mem_write_i   (core_mem_write),
         .mmio_read_valid_i(core_mmio_read_valid),
