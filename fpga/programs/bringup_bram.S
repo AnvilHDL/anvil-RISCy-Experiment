@@ -1,4 +1,4 @@
-    .equ LED_MMIO,      0x30000000
+    .equ LED_MMIO,      0x10000008
     .equ UART_THR_MMIO, 0x10000000
     .equ UART_LSR_MMIO, 0x10000005
     .equ UART_THRE,     0x20

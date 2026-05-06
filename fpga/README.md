@@ -101,7 +101,7 @@ Expected first-board behavior for the BRAM target:
 - `led[0]` turns on after reset is released.
 - `led[1]` blinks as a heartbeat.
 - `led[7:2]` show the lower six bits of the last GPIO byte written to
-  `0x30000000`.
+  `0x10000008`.
 - the PROG/UART USB port emits software-authored UART text at 115200 baud.
 - the bundled BRAM program writes `BOOT\r\nB\r\nL=5A\r\n` through the UART
   THR register at `0x10000000` and polls the UART LSR at `0x10000005`.

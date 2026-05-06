@@ -103,7 +103,7 @@ Current non-production wrapper behavior:
 - the BRAM path uses a separate FPGA peripheral block for GPIO, UART TX, and
   CLINT load readback instead of wrapper-generated text state machines.
 - BRAM bring-up drives the NS16550-style UART THR/LSR addresses
-  (`0x10000000`, `0x10000005`) and a simple GPIO MMIO window at `0x30000000`.
+  (`0x10000000`, `0x10000005`) and a simple GPIO MMIO window at `0x10000008`.
 - the bundled BRAM bring-up payload writes `BOOT\r\nB\r\nL=5A\r\n` in software.
 - LEDs show reset, heartbeat, and the low six bits of the GPIO byte.
 - No real UART RX handling, PLIC/SEIP path, storage, or boot-loader hardware is

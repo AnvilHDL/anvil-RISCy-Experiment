@@ -18,7 +18,7 @@ module risky_fpga_peripherals #(
     output wire [7:0]  led_o,
     output wire        fan_pwm_o
 );
-    localparam logic [63:0] LED_MMIO          = 64'h0000_0000_3000_0000;
+    localparam logic [63:0] LED_MMIO          = 64'h0000_0000_1000_0008;
     localparam logic [63:0] UART_THR_MMIO     = 64'h0000_0000_1000_0000;
     localparam logic [63:0] UART_LSR_MMIO     = 64'h0000_0000_1000_0005;
     localparam logic [63:0] UART_SCRATCH_MMIO = 64'h0000_0000_1000_0007;
