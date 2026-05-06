@@ -8,6 +8,11 @@
 _start:
     la   sp, __stack_top
 
+    li   t5, 200000
+0:
+    addi t5, t5, -1
+    bnez t5, 0b
+
     li   t0, LED_MMIO
     li   t1, 0x5a
     sb   t1, 0(t0)
