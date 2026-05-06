@@ -267,7 +267,9 @@ module risky_genesys2_bram_top (
         .mem_addr_i    (core_mem_addr),
         .mem_read_i    (core_mem_read),
         .mem_write_i   (core_mem_write),
-        .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) || (core_store_addr_q[31:24] == 8'h02))),
+        .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) ||
+                                               (core_store_addr_q[31:24] == 8'h02) ||
+                                               (core_store_addr_q[31:26] == 6'd3))),
         .store_addr_i  (core_store_addr_q),
         .store_data_i  (core_store_word_q),
         .mtime_i       (core_mtime),
