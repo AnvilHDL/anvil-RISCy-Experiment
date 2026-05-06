@@ -7,6 +7,12 @@ CORE_SRC="$FPGA_OUT_DIR/pipeline_core.sv"
 PATCHED_CORE="$FPGA_OUT_DIR/pipeline_core_bram_if.sv"
 BRAM_WRAPPER_SRC="$ROOT/fpga/src/risky_genesys2_bram_top.sv"
 BRAM_WRAPPER_OUT="$FPGA_OUT_DIR/risky_genesys2_bram_top.sv"
+PERIPH_SRC="$ROOT/fpga/src/risky_fpga_peripherals.sv"
+PERIPH_OUT="$FPGA_OUT_DIR/risky_fpga_peripherals.sv"
+UART_TX_SRC="$ROOT/fpga/src/risky_uart_tx.sv"
+UART_TX_OUT="$FPGA_OUT_DIR/risky_uart_tx.sv"
+BRAM_INIT_SRC="$ROOT/fpga/programs/bringup_bram.S"
+BRAM_INIT_OUT="$FPGA_OUT_DIR/risky_genesys2_bram_init.vh"
 FILELIST="$ROOT/build/fpga/risky_genesys2_bram.f"
 
 "$ROOT/scripts/export_fpga_rtl.sh" >/dev/null
@@ -17,6 +23,14 @@ if [ ! -r "$CORE_SRC" ]; then
 fi
 if [ ! -r "$BRAM_WRAPPER_SRC" ]; then
   echo "[fpga-bram] missing BRAM wrapper: $BRAM_WRAPPER_SRC" >&2
+  exit 1
+fi
+if [ ! -r "$PERIPH_SRC" ] || [ ! -r "$UART_TX_SRC" ]; then
+  echo "[fpga-bram] missing FPGA peripheral sources" >&2
+  exit 1
+fi
+if [ ! -r "$BRAM_INIT_SRC" ]; then
+  echo "[fpga-bram] missing BRAM bring-up program source: $BRAM_INIT_SRC" >&2
   exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -57,7 +71,10 @@ text = text.replace(
     "  output logic[63:0] mem_store_addr_o,\n"
     "  output logic[63:0] mem_store_word_o,\n"
     "  output logic[0:0] sim_exit_valid_o,\n"
-    "  output logic[63:0] sim_exit_code_o\n"
+    "  output logic[63:0] sim_exit_code_o,\n"
+    "  output logic[63:0] mtime_o,\n"
+    "  output logic[63:0] mtimecmp_o,\n"
+    "  output logic[63:0] stimecmp_o\n"
     ");",
     1,
 )
@@ -72,6 +89,9 @@ text = text.replace(
     "  assign mem_store_word_o = mem_store_word_q_q;\n"
     "  assign sim_exit_valid_o = sim_exit_valid_q_q;\n"
     "  assign sim_exit_code_o = sim_exit_code_q_q;\n"
+    "  assign mtime_o = mtime_q_q;\n"
+    "  assign mtimecmp_o = mtimecmp_q_q;\n"
+    "  assign stimecmp_o = stimecmp_q_q;\n"
     "endmodule",
     1,
 )
@@ -80,9 +100,15 @@ open(dst, "w", encoding="utf-8").write(text)
 PY
 
 cp "$BRAM_WRAPPER_SRC" "$BRAM_WRAPPER_OUT"
+cp "$PERIPH_SRC" "$PERIPH_OUT"
+cp "$UART_TX_SRC" "$UART_TX_OUT"
+python3 "$ROOT/scripts/gen_fpga_bram_init.py" \
+  "$BRAM_INIT_SRC" "$ROOT/sim/link.ld" "$BRAM_INIT_OUT"
 
 {
   echo "$BRAM_WRAPPER_OUT"
+  echo "$PERIPH_OUT"
+  echo "$UART_TX_OUT"
   echo "$PATCHED_CORE"
 } > "$FILELIST"
 

@@ -21,9 +21,9 @@ The current FPGA targets are:
 
 The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
 clock/reset, LED, fan, and UART-idle pins. The BRAM wrapper packages a generated
-`pipeline_core_bram_if` bridge with a small synthesizable memory, LED MMIO,
-and a tiny UART TX debug path for the first bare-metal board execution target.
-Both flows avoid large Anvil memories so RTL export stays bounded.
+`pipeline_core_bram_if` bridge with a small synthesizable memory and a separate
+FPGA peripheral block for LED, UART, and CLINT readback. Both flows avoid large
+Anvil memories so RTL export stays bounded.
 
 This is not yet a full FPGA SoC capable of booting xv6 on the board. xv6 still
 depends on simulation-backed RAM, Sv39 PTW, UART/PLIC/virtio, and disk behavior.
@@ -100,14 +100,18 @@ Expected first-board behavior for the BRAM target:
 
 - `led[0]` turns on after reset is released.
 - `led[1]` blinks as a heartbeat.
-- `led[7:2]` show the lower six bits of the bare-metal LED MMIO store.
-- the PROG/UART USB port emits `BOOT\r\n` at 115200 baud.
-- the BRAM demo program emits `B` over the same UART path.
-- every LED MMIO store also emits `L=<byte>\r\n`.
+- `led[7:2]` show the lower six bits of the last GPIO byte written to
+  `0x30000000`.
+- the PROG/UART USB port emits software-authored UART text at 115200 baud.
+- the bundled BRAM program writes `BOOT\r\nB\r\nL=5A\r\n` through the UART
+  THR register at `0x10000000` and polls the UART LSR at `0x10000005`.
+- the BRAM wrapper returns CLINT readback for `mtime` at `0x0200bff8` and
+  `mtimecmp` at `0x02004000` using timer state already owned by the RTL core.
 
 To watch the BRAM UART stream on the laptop attached to the board, open the
-PROG/UART serial port at 115200 8N1 after programming. On Linux this is usually
-one of `/dev/ttyUSB0` or `/dev/ttyUSB1`; identify the quiet port with:
+dedicated UART micro-USB port at 115200 8N1 before programming or pressing
+reset. On Linux this is usually one of `/dev/ttyUSB0` or `/dev/ttyUSB1`;
+identify the FT232 UART port with:
 
 ```bash
 dmesg | tail -50
@@ -129,11 +133,13 @@ must eventually own. The smoke and BRAM wrappers are still useful because they:
 
 1. Add a real memory/MMIO request-response interface to `pipeline_core`.
 2. Move RAM behind a synthesizable BRAM or AXI-attached memory subsystem.
-3. Add UART and PLIC as RTL peripherals or bus-facing wrappers.
-4. Move Sv39 PTW/TLB into RTL once memory reads use the common interface.
-5. Choose the xv6 disk path: SD-card SPI, UART loader, debug bridge, or host
+3. Split the BRAM-side FPGA peripheral block into a bus-facing UART/GPIO/timer
+   block rather than board-top glue.
+4. Add UART RX and interrupt plumbing behind the same peripheral boundary.
+5. Move Sv39 PTW/TLB into RTL once memory reads use the common interface.
+6. Choose the xv6 disk path: SD-card SPI, UART loader, debug bridge, or host
    bridge.
-6. Run Vivado implementation and timing closure on Genesys 2.
+7. Replace BRAM-only memory with a wider memory subsystem and run xv6 on it.
 
 ## Toolchain Note
 

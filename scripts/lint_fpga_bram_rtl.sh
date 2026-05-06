@@ -29,4 +29,5 @@ if [ "${#rtl_files[@]}" -eq 0 ]; then
 fi
 
 run_with_timeout "$FPGA_LINT_TIMEOUT" \
-  verilator --lint-only -Wno-fatal --top risky_genesys2_bram_top "${rtl_files[@]}"
+  verilator --lint-only -Wno-fatal -I"$ROOT/build/fpga/rtl" \
+    --top risky_genesys2_bram_top "${rtl_files[@]}"

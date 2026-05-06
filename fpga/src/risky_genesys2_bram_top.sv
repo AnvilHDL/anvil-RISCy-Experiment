@@ -1,10 +1,13 @@
 // Genesys 2 BRAM bring-up top for real board execution of a tiny program.
 //
-// This target uses a patched FPGA export of pipeline_core that exposes the
-// existing fetch/load data and store side-channel registers as ports, then
-// attaches small synthesizable BRAM, LED MMIO, and a minimal UART TX debug
-// path. It is for bare-metal board bring-up before DDR, UART RX, interrupts,
-// storage, and RTL Sv39 PTW.
+// This target keeps the board wrapper thin and pushes platform-like behavior
+// into small dedicated blocks:
+//   - MMCM/clock/reset live here
+//   - BRAM remains a local synchronous memory
+//   - LED/UART/CLINT readback live in risky_fpga_peripherals
+//
+// The BRAM payload itself is software-authored and generated into
+// risky_genesys2_bram_init.vh during FPGA export.
 
 module risky_genesys2_bram_top (
     input  wire       clk200_p,
@@ -16,15 +19,11 @@ module risky_genesys2_bram_top (
     output wire       fan_pwm
 );
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
-    localparam logic [63:0] LED_MMIO = 64'h0000_0000_1000_0000;
-    localparam logic [63:0] UART_MMIO = 64'h0000_0000_1000_0008;
     localparam int RAM_WORDS = 1024;
     localparam logic [63:0] RAM_WORDS_64 = 64'd1024;
     localparam int CORE_CLK_HZ = 25_000_000;
     localparam int UART_BAUD = 115200;
-    localparam int UART_CLKS_PER_BIT = CORE_CLK_HZ / UART_BAUD;
     localparam int UART_FIFO_DEPTH = 64;
-    localparam logic [6:0] UART_FIFO_DEPTH_7 = 7'd64;
 
     wire clk200;
     wire clk_core;
@@ -48,6 +47,17 @@ module risky_genesys2_bram_top (
     wire clkfb_mmcm;
     wire clkfb_bufg;
     wire clk_core_mmcm;
+    wire clkout0b_unused;
+    wire clkout1_unused;
+    wire clkout1b_unused;
+    wire clkout2_unused;
+    wire clkout2b_unused;
+    wire clkout3_unused;
+    wire clkout3b_unused;
+    wire clkout4_unused;
+    wire clkout5_unused;
+    wire clkout6_unused;
+    wire clkfboutb_unused;
 
     MMCME2_BASE #(
         .BANDWIDTH("OPTIMIZED"),
@@ -62,7 +72,18 @@ module risky_genesys2_bram_top (
         .RST      (!cpu_resetn),
         .PWRDWN   (1'b0),
         .CLKFBOUT (clkfb_mmcm),
+        .CLKFBOUTB(clkfboutb_unused),
         .CLKOUT0  (clk_core_mmcm),
+        .CLKOUT0B (clkout0b_unused),
+        .CLKOUT1  (clkout1_unused),
+        .CLKOUT1B (clkout1b_unused),
+        .CLKOUT2  (clkout2_unused),
+        .CLKOUT2B (clkout2b_unused),
+        .CLKOUT3  (clkout3_unused),
+        .CLKOUT3B (clkout3b_unused),
+        .CLKOUT4  (clkout4_unused),
+        .CLKOUT5  (clkout5_unused),
+        .CLKOUT6  (clkout6_unused),
         .LOCKED   (core_clk_locked)
     );
 
@@ -98,22 +119,15 @@ module risky_genesys2_bram_top (
     wire [63:0] core_mem_rdata;
     wire        core_sim_exit_valid;
     wire [63:0] core_sim_exit_code;
+    wire [63:0] core_mtime;
+    wire [63:0] core_mtimecmp;
+    wire [63:0] core_stimecmp;
 
     (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
     reg [63:0] fetch_word_q = 64'h0000_0013_0000_0013;
     reg [63:0] mem_word_q = 64'd0;
-    reg [7:0] led_q = 8'h00;
+    reg [63:0] mmio_word_q = 64'd0;
     reg [31:0] heartbeat_q = 32'd0;
-
-    reg [7:0] uart_fifo [0:UART_FIFO_DEPTH-1];
-    reg [5:0] uart_wr_ptr_q = 6'd0;
-    reg [5:0] uart_rd_ptr_q = 6'd0;
-    reg [6:0] uart_count_q = 7'd0;
-    reg [7:0] uart_tx_data_q = 8'h00;
-    reg       uart_tx_start_q = 1'b0;
-    reg       uart_fifo_push_q = 1'b0;
-    reg [5:0] uart_fifo_push_addr_q = 6'd0;
-    reg [7:0] uart_fifo_push_data_q = 8'h00;
 
     reg [9:0] pc_word_idx_q = 10'd0;
     reg [2:0] pc_byte_idx_q = 3'd0;
@@ -125,47 +139,22 @@ module risky_genesys2_bram_top (
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
     reg       core_store_valid_q = 1'b0;
-    reg [63:0] last_mmio_store_addr_q = 64'd0;
-    reg [63:0] last_mmio_store_word_q = 64'd0;
-    reg       last_mmio_store_valid_q = 1'b0;
     (* DONT_TOUCH = "true" *) reg [9:0] bram_store_word_idx_q = 10'd0;
     (* DONT_TOUCH = "true" *) reg [63:0] bram_store_word_q = 64'd0;
     (* DONT_TOUCH = "true" *) reg       bram_store_we_q = 1'b0;
 
-    wire uart_fifo_empty = uart_count_q == 7'd0;
-    wire uart_fifo_full = uart_count_q == UART_FIFO_DEPTH_7;
-    wire uart_tx_busy;
+    wire [63:0] mmio_rdata;
+    wire [7:0] led_state;
 
     assign core_imem_rdata = pc_byte_idx_q[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
-    assign core_mem_rdata = mem_word_q;
+    assign core_mem_rdata = mem_in_ram_q ? mem_word_q : mmio_word_q;
 
     integer i;
     initial begin
         for (i = 0; i < RAM_WORDS; i = i + 1) begin
-            bram[i] = 64'h0000_0013_0000_0013; // NOP/NOP
+            bram[i] = 64'h0000_0013_0000_0013;
         end
-
-        // Bare-metal bring-up payload at 0x80000000:
-        //   - writes LEDs with 0x5a
-        //   - writes "BOOT\r\nB\r\nL=5A\r\n" to UART MMIO
-        //   - loops forever
-        bram[0]  = 64'h05a00313_100002b7;
-        bram[1]  = 64'h04200313_0062a023;
-        bram[2]  = 64'h04f00313_0062a423;
-        bram[3]  = 64'h04f00313_0062a423;
-        bram[4]  = 64'h05400313_0062a423;
-        bram[5]  = 64'h00d00313_0062a423;
-        bram[6]  = 64'h00a00313_0062a423;
-        bram[7]  = 64'h04200313_0062a423;
-        bram[8]  = 64'h00d00313_0062a423;
-        bram[9]  = 64'h00a00313_0062a423;
-        bram[10] = 64'h04c00313_0062a423;
-        bram[11] = 64'h03d00313_0062a423;
-        bram[12] = 64'h03500313_0062a423;
-        bram[13] = 64'h04100313_0062a423;
-        bram[14] = 64'h00d00313_0062a423;
-        bram[15] = 64'h00a00313_0062a423;
-        bram[16] = 64'h0000006f_0062a423;
+`include "risky_genesys2_bram_init.vh"
     end
 
     always @(posedge clk_core) begin
@@ -210,68 +199,20 @@ module risky_genesys2_bram_top (
         end
     end
 
-    // Keep the RAM in a synchronous read/write template so Vivado infers BRAM
-    // instead of dissolving the array into flip-flops.
     always @(posedge clk_core) begin
         fetch_word_q <= pc_in_ram_q ? bram[pc_word_idx_q] : 64'h0000_0013_0000_0013;
         mem_word_q <= mem_in_ram_q ? bram[mem_word_idx_q] : 64'd0;
+        mmio_word_q <= mmio_rdata;
         if (bram_store_we_q) begin
             bram[bram_store_word_idx_q] <= bram_store_word_q;
         end
-        if (uart_fifo_push_q) begin
-            uart_fifo[uart_fifo_push_addr_q] <= uart_fifo_push_data_q;
-        end
     end
 
-    always @(posedge clk_core or negedge rst_ni) begin
+    always @(posedge clk_core) begin
         if (!rst_ni) begin
-            led_q <= 8'h00;
             heartbeat_q <= 32'd0;
-            uart_wr_ptr_q <= 6'd0;
-            uart_rd_ptr_q <= 6'd0;
-            uart_count_q <= 7'd0;
-            uart_tx_data_q <= 8'h00;
-            uart_tx_start_q <= 1'b0;
-            uart_fifo_push_q <= 1'b0;
-            uart_fifo_push_addr_q <= 6'd0;
-            uart_fifo_push_data_q <= 8'h00;
-            last_mmio_store_addr_q <= 64'd0;
-            last_mmio_store_word_q <= 64'd0;
-            last_mmio_store_valid_q <= 1'b0;
         end else begin
-            logic store_mmio_event;
-
             heartbeat_q <= heartbeat_q + 32'd1;
-            uart_tx_start_q <= 1'b0;
-            uart_fifo_push_q <= 1'b0;
-
-            store_mmio_event = core_store_valid_q
-                && (!last_mmio_store_valid_q
-                    || core_store_addr_q != last_mmio_store_addr_q
-                    || core_store_word_q != last_mmio_store_word_q);
-
-            if (store_mmio_event && core_store_addr_q == LED_MMIO) begin
-                led_q <= core_store_word_q[7:0];
-            end
-
-            if (!uart_fifo_full && store_mmio_event && core_store_addr_q == UART_MMIO) begin
-                uart_fifo_push_q <= 1'b1;
-                uart_fifo_push_addr_q <= uart_wr_ptr_q;
-                uart_fifo_push_data_q <= core_store_word_q[7:0];
-                uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1;
-                uart_count_q <= uart_count_q + 7'd1;
-            end
-
-            last_mmio_store_addr_q <= core_store_addr_q;
-            last_mmio_store_word_q <= core_store_word_q;
-            last_mmio_store_valid_q <= core_store_valid_q;
-
-            if (!uart_fifo_empty && !uart_tx_busy && !uart_fifo_push_q) begin
-                uart_tx_data_q <= uart_fifo[uart_rd_ptr_q];
-                uart_rd_ptr_q <= uart_rd_ptr_q + 6'd1;
-                uart_count_q <= uart_count_q - 7'd1;
-                uart_tx_start_q <= 1'b1;
-            end
         end
     end
 
@@ -286,75 +227,34 @@ module risky_genesys2_bram_top (
         .mem_store_addr_o   (core_store_addr),
         .mem_store_word_o   (core_store_word),
         .sim_exit_valid_o   (core_sim_exit_valid),
-        .sim_exit_code_o    (core_sim_exit_code)
+        .sim_exit_code_o    (core_sim_exit_code),
+        .mtime_o            (core_mtime),
+        .mtimecmp_o         (core_mtimecmp),
+        .stimecmp_o         (core_stimecmp)
     );
 
-    risky_uart_tx #(
-        .CLKS_PER_BIT(UART_CLKS_PER_BIT)
-    ) i_uart_tx (
-        .clk_i      (clk_core),
-        .rst_ni     (rst_ni),
-        .start_i    (uart_tx_start_q),
-        .data_i     (uart_tx_data_q),
-        .tx_o       (tx),
-        .busy_o     (uart_tx_busy)
+    risky_fpga_peripherals #(
+        .CORE_CLK_HZ(CORE_CLK_HZ),
+        .UART_BAUD(UART_BAUD),
+        .UART_FIFO_DEPTH(UART_FIFO_DEPTH)
+    ) i_peripherals (
+        .clk_i         (clk_core),
+        .rst_ni        (rst_ni),
+        .rx_i          (rx),
+        .mem_addr_i    (core_mem_addr),
+        .store_valid_i (core_store_valid_q && !store_in_ram_q),
+        .store_addr_i  (core_store_addr_q),
+        .store_data_i  (core_store_word_q),
+        .mtime_i       (core_mtime),
+        .mtimecmp_i    (core_mtimecmp),
+        .stimecmp_i    (core_stimecmp),
+        .mem_rdata_o   (mmio_rdata),
+        .tx_o          (tx),
+        .led_o         (led_state),
+        .fan_pwm_o     (fan_pwm)
     );
 
     assign led[0] = rst_ni;
     assign led[1] = heartbeat_q[22];
-    assign led[7:2] = led_q[5:0];
-
-    assign fan_pwm = 1'b1;
-
-    wire unused_rx = rx;
-endmodule
-
-module risky_uart_tx #(
-    parameter integer CLKS_PER_BIT = 1736
-) (
-    input  wire      clk_i,
-    input  wire      rst_ni,
-    input  wire      start_i,
-    input  wire [7:0] data_i,
-    output reg       tx_o,
-    output wire      busy_o
-);
-    reg [13:0] baud_ctr_q = 14'd0;
-    reg [3:0] bit_idx_q = 4'd0;
-    reg [9:0] shift_q = 10'h3ff;
-    reg       busy_q = 1'b0;
-    localparam logic [13:0] CLKS_PER_BIT_14 = CLKS_PER_BIT[13:0];
-
-    assign busy_o = busy_q;
-
-    always @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            baud_ctr_q <= 14'd0;
-            bit_idx_q <= 4'd0;
-            shift_q <= 10'h3ff;
-            busy_q <= 1'b0;
-            tx_o <= 1'b1;
-        end else if (!busy_q) begin
-            tx_o <= 1'b1;
-            baud_ctr_q <= 14'd0;
-            bit_idx_q <= 4'd0;
-            if (start_i) begin
-                shift_q <= {1'b1, data_i, 1'b0};
-                tx_o <= 1'b0;
-                busy_q <= 1'b1;
-            end
-        end else if (baud_ctr_q == CLKS_PER_BIT_14 - 14'd1) begin
-            baud_ctr_q <= 14'd0;
-            shift_q <= {1'b1, shift_q[9:1]};
-            bit_idx_q <= bit_idx_q + 4'd1;
-            tx_o <= shift_q[1];
-            if (bit_idx_q == 4'd9) begin
-                busy_q <= 1'b0;
-                bit_idx_q <= 4'd0;
-                tx_o <= 1'b1;
-            end
-        end else begin
-            baud_ctr_q <= baud_ctr_q + 14'd1;
-        end
-    end
+    assign led[7:2] = led_state[5:0];
 endmodule

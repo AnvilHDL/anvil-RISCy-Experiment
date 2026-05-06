@@ -13,11 +13,13 @@ obj_dir/
 *.elf
 *.bin
 *.hex
+*.bit
 *.img
 *.log
 *.trace
 *.vcd
 *.fst
+*.jou
 
 # Verilator top-level executables
 Vtop

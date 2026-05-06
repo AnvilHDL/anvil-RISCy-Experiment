@@ -99,12 +99,15 @@ and disk simulation services with synthesizable hardware.
 
 Current non-production wrapper behavior:
 
-- `fan_pwm` is held high so the board fan remains enabled.
-- the BRAM wrapper owns a tiny UART TX-only debug path at 115200 baud.
-- BRAM bring-up emits `BOOT\r\n`, forwards byte stores at `0x10000008`,
-  and reports LED MMIO writes as `L=<byte>\r\n`.
-- LEDs show reset, heartbeat, and the low six bits of the LED MMIO byte.
-- No real UART RX, interrupt, storage, or boot-loader hardware is attached.
+- the board top owns MMCM clocking, reset release, BRAM staging, and heartbeat.
+- the BRAM path uses a separate FPGA peripheral block for GPIO, UART TX, and
+  CLINT load readback instead of wrapper-generated text state machines.
+- BRAM bring-up drives the NS16550-style UART THR/LSR addresses
+  (`0x10000000`, `0x10000005`) and a simple GPIO MMIO window at `0x30000000`.
+- the bundled BRAM bring-up payload writes `BOOT\r\nB\r\nL=5A\r\n` in software.
+- LEDs show reset, heartbeat, and the low six bits of the GPIO byte.
+- No real UART RX handling, PLIC/SEIP path, storage, or boot-loader hardware is
+  attached.
 
 These are acceptable for synthesis smoke only. Do not claim board software
 execution until the wrapper is extended into a real SoC.
@@ -119,10 +122,12 @@ until capability state is migrated in bounded scalarized RTL slices.
 2. Run the BRAM-backed LED MMIO target on Genesys 2.
 3. Replace the generated BRAM bridge with a first-class Anvil memory interface.
 4. Add an RTL Sv39 TLB/PTW with bounded multi-cycle stalls.
-5. Add UART, PLIC, and external interrupt paths in RTL or behind a real bus.
+5. Add a real bus-facing peripheral block for UART, GPIO, timer read/write, and
+   external interrupt wiring.
 6. Decide the FPGA storage path for xv6 filesystem access.
 7. Run xv6 in Verilator without simulation-only architectural patches.
-8. Add synthesis constraints, DDR mapping, clocks/resets, and timing closure.
+8. Replace BRAM-only execution with a larger memory subsystem and keep timing
+   closure intact on Genesys 2.
 
 Any feature that depends on the C++ harness should be marked simulation-backed
 until the corresponding RTL replacement exists and is covered by tests.
