@@ -16,19 +16,52 @@ _start:
 
     li   t3, UART_THR_MMIO
 
-    # Print banner repeatedly. This uses no stack; the message load also
-    # confirms BRAM data reads before moving on to the DDR/xv6 path.
+    # Print banner repeatedly using immediate bytes. Keep UART bringup on the
+    # proven path; BRAM data-load debugging should not block the serial gate.
 banner_loop:
-    la   t4, msg_banner
-char_loop:
-    lbu  t2, 0(t4)
-    beqz t2, banner_done
+    li   t2, 'R'
     sb   t2, 0(t3)
     call char_delay
-    addi t4, t4, 1
-    j    char_loop
+    li   t2, 'I'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'S'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'C'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'y'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, ' '
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'A'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'L'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'I'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'V'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, 'E'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, '!'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, '\r'
+    sb   t2, 0(t3)
+    call char_delay
+    li   t2, '\n'
+    sb   t2, 0(t3)
+    call char_delay
 
-banner_done:
     li   t5, BANNER_DELAY
 banner_wait:
     addi t5, t5, -1
@@ -42,7 +75,3 @@ char_wait:
     addi t5, t5, -1
     bnez t5, char_wait
     ret
-
-    .section .rodata
-msg_banner:
-    .asciz "RISCy ALIVE!\r\n"
