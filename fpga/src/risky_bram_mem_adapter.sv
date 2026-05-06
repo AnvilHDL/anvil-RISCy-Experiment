@@ -64,7 +64,7 @@ module risky_bram_mem_adapter #(
             bram_store_word_q <= 64'd0;
             bram_store_we_q <= 1'b0;
         end else begin
-            if_valid_q <= if_req_valid_i;
+            if_valid_q <= if_req_valid_i && if_in_ram;
             if_halfsel_q <= if_req_addr_i[2];
             mem_in_ram_q <= mem_req_valid_i && !mem_req_write_i && mem_in_ram;
             bram_store_word_idx_q <= store_word_idx;
@@ -79,13 +79,10 @@ module risky_bram_mem_adapter #(
             mem_word_q <= 64'd0;
             mmio_word_q <= 64'd0;
         end else begin
-            if_word_q <= (if_req_valid_i && if_in_ram) ? bram[if_word_idx] : 64'h0000_0013_0000_0013;
-            if (mem_req_valid_i && !mem_req_write_i) begin
-                if (mem_in_ram) begin
-                    mem_word_q <= bram_mem[mem_word_idx];
-                end else begin
-                    mmio_word_q <= mmio_rdata_i;
-                end
+            if_word_q <= bram[if_word_idx];
+            mem_word_q <= bram_mem[mem_word_idx];
+            if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram) begin
+                mmio_word_q <= mmio_rdata_i;
             end
         end
         if (rst_ni && bram_store_we_q) begin
