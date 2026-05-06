@@ -126,6 +126,7 @@ def main():
         fh.write("// Keep this file in the FPGA RTL output directory next to risky_genesys2_bram_top.sv.\n")
         for idx, word in enumerate(words):
             fh.write(f"        bram[{idx}] = 64'h{word:016x};\n")
+            fh.write(f"        bram_mem[{idx}] = 64'h{word:016x};\n")
 
 
 if __name__ == "__main__":
