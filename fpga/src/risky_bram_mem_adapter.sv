@@ -76,37 +76,49 @@ module risky_bram_mem_adapter #(
     // =========================================================================
     // Read data
     //
-    // Keep the read ports synchronous and unconditional so Vivado infers block
-    // RAM instead of LUTRAM. The outputs are gated separately below.
+    // SDP BRAM pattern (Xilinx UG901): posedge, unconditional read, gated
+    // write.  The mux-control flag (mem_in_ram_q) and the MMIO word are
+    // latched on the SAME posedge as the BRAM read so the output mux is
+    // always consistent when the core samples mem_rsp_data_o one cycle later.
+    //
+    // BUG HISTORY: Codex used negedge (non-standard, breaks RAMB inference)
+    // and a live combinatorial mem_in_ram in the mux.  Because core_mem_addr
+    // has already advanced to the next instruction by the time the core
+    // samples the response, the live mem_in_ram was 0 for any non-memory
+    // instruction following a BRAM load, causing mmio_rdata_i (=0) to be
+    // returned instead of mem_word_q — producing ld_fail.
     // =========================================================================
-    reg [63:0] if_word_q  = 64'd0;
-    reg [63:0] mem_word_q = 64'd0;
+    reg [63:0] if_word_q   = 64'd0;
+    reg [63:0] mem_word_q  = 64'd0;
+    reg        mem_in_ram_q = 1'b0;
+    reg [63:0] mmio_word_q = 64'd0;
 
-    always @(negedge clk_i) begin
+    always @(posedge clk_i) begin
+        // IF BRAM: unconditional read + gated write (SDP)
         if_word_q <= bram[if_word_idx];
-        // Write port A — committed store
         if (sto_in_ram && mem_store_valid_i)
             bram[sto_word_idx] <= mem_store_word_i;
     end
 
-    always @(negedge clk_i) begin
+    always @(posedge clk_i) begin
+        // MEM BRAM: unconditional read + gated write (SDP)
         mem_word_q <= bram_mem[mem_word_idx];
-        // Write port A — committed store (same data as instance 0)
         if (sto_in_ram && mem_store_valid_i)
             bram_mem[sto_word_idx] <= mem_store_word_i;
+
+        // Latch BRAM/MMIO select and MMIO data together with the BRAM word
+        mem_in_ram_q <= mem_in_ram && mem_req_valid_i && !mem_req_write_i;
+        if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram)
+            mmio_word_q <= mmio_rdata_i;
     end
 
     // =========================================================================
-    // Output mux
+    // Output mux — registered signals only, stable when core samples
     // =========================================================================
-    assign if_rsp_data_o  = (if_req_valid_i && if_in_ram)
+    assign if_rsp_data_o = (if_req_valid_i && if_in_ram)
         ? (if_req_addr_i[2] ? if_word_q[63:32] : if_word_q[31:0])
         : 32'h0000_0013;
-    // Drive read data whenever the current request is a load.
-    // The core samples this bus on its own schedule, so the adapter should not
-    // hide the value behind the request-valid pulse.
-    assign mem_rsp_data_o = (!mem_req_write_i)
-        ? (mem_in_ram ? mem_word_q : mmio_rdata_i)
-        : 64'd0;
+
+    assign mem_rsp_data_o = mem_in_ram_q ? mem_word_q : mmio_word_q;
 
 endmodule
