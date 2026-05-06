@@ -102,7 +102,10 @@ module risky_bram_mem_adapter #(
     assign if_rsp_data_o  = (if_req_valid_i && if_in_ram)
         ? (if_req_addr_i[2] ? if_word_q[63:32] : if_word_q[31:0])
         : 32'h0000_0013;
-    assign mem_rsp_data_o = (mem_req_valid_i && !mem_req_write_i)
+    // Drive read data whenever the current request is a load.
+    // The core samples this bus on its own schedule, so the adapter should not
+    // hide the value behind the request-valid pulse.
+    assign mem_rsp_data_o = (!mem_req_write_i)
         ? (mem_in_ram ? mem_word_q : mmio_rdata_i)
         : 64'd0;
 
