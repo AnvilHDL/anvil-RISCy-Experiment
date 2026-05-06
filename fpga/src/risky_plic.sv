@@ -54,6 +54,8 @@ module risky_plic (
         end
     endfunction
 
+    wire [31:0] store_word = store_word32(store_addr_i, store_data_i);
+
     always @* begin
         mem_rdata_o = 64'd0;
         if ((mem_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_SCLAIM0) begin
@@ -89,18 +91,18 @@ module risky_plic (
 
             if (store_valid_i) begin
                 if ((store_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_ENABLE_S0) begin
-                    enable_s_q <= store_word32(store_addr_i, store_data_i);
+                    enable_s_q <= store_word;
                 end else if ((store_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_SPRIORITY0) begin
-                    threshold_q <= store_word32(store_addr_i, store_data_i)[2:0];
+                    threshold_q <= store_word[2:0];
                 end else if ((store_addr_i & 64'hffff_ffff_ffff_fffc) == (PLIC_BASE + 64'd4 * UART_IRQ_ID)) begin
-                    priority_uart_q <= store_word32(store_addr_i, store_data_i)[2:0];
+                    priority_uart_q <= store_word[2:0];
                 end else if ((store_addr_i & 64'hffff_ffff_ffff_fffc) == (PLIC_BASE + 64'd4 * VIRTIO_IRQ_ID)) begin
-                    priority_virtio_q <= store_word32(store_addr_i, store_data_i)[2:0];
+                    priority_virtio_q <= store_word[2:0];
                 end else if ((store_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_SCLAIM0) begin
-                    if (store_word32(store_addr_i, store_data_i) == UART_IRQ_ID[31:0]) begin
+                    if (store_word == UART_IRQ_ID[31:0]) begin
                         pending_uart_q <= 1'b0;
                     end
-                    if (store_word32(store_addr_i, store_data_i) == VIRTIO_IRQ_ID[31:0]) begin
+                    if (store_word == VIRTIO_IRQ_ID[31:0]) begin
                         pending_virtio_q <= 1'b0;
                     end
                 end
