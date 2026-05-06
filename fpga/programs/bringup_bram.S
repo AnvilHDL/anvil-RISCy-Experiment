@@ -9,9 +9,25 @@
     .section .text._start
     .globl _start
 _start:
-    # Write 0x5A to LED register to show we reached here (LED[3,5,6] ON)
+    # Stage 0: reached reset vector.
     li   t0, LED_MMIO
-    li   t1, 0x5a
+    li   t1, 0x02
+    sb   t1, 0(t0)
+
+    # Stage 1: aligned 64-bit BRAM data load returns the expected low byte.
+    la   t4, probe_word
+    ld   t2, 0(t4)
+    li   t1, 'R'
+    bne  t2, t1, load_fail
+    li   t1, 0x08
+    sb   t1, 0(t0)
+
+    # Stage 2: byte BRAM data load returns the first banner byte.
+    la   t4, msg_banner
+    lbu  t2, 0(t4)
+    li   t1, 'R'
+    bne  t2, t1, load_fail
+    li   t1, 0x10
     sb   t1, 0(t0)
 
     li   t3, UART_THR_MMIO
@@ -36,6 +52,12 @@ banner_wait:
 
     j    banner_loop
 
+load_fail:
+    li   t1, 0x1a
+    sb   t1, 0(t0)
+fail_loop:
+    j    fail_loop
+
 char_delay:
     li   t5, CLKS_PER_CHAR
 char_wait:
@@ -44,5 +66,8 @@ char_wait:
     ret
 
     .section .rodata
+    .balign 8
+probe_word:
+    .dword 'R'
 msg_banner:
     .asciz "RISCy ALIVE!\r\n"
