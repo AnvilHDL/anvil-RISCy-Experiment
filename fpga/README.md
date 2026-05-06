@@ -115,13 +115,16 @@ Expected first-board behavior for the BRAM target:
   at the same `0x0c...` addresses used by the simulator.
 
 To watch the BRAM UART stream on the laptop attached to the board, open the
-dedicated UART micro-USB port at 115200 8N1 before programming or pressing
-reset. On Linux this is usually one of `/dev/ttyUSB0` or `/dev/ttyUSB1`;
-identify the FT232 UART port with:
+dedicated FT232R USB-UART port at 115200 8N1 before programming or pressing
+reset. On Linux this is usually the `usb-FTDI_FT232R_USB_UART_...` device,
+often `/dev/ttyUSB0`; the Digilent Adept `usb-Digilent_Digilent_Adept_USB_Device_...`
+entries are the JTAG/programming bridge, not the UART console. Identify the UART
+port with:
 
 ```bash
 dmesg | tail -50
-python3 -m serial.tools.miniterm /dev/ttyUSB0 115200
+ls -l /dev/serial/by-id/
+python3 -m serial.tools.miniterm /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AV0KRBIH-if00-port0 115200
 ```
 
 ## Why This Is the First FPGA Step
