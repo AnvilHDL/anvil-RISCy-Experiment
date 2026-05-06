@@ -36,7 +36,7 @@ module risky_bram_mem_adapter #(
     output wire [63:0] mem_rsp_data_o
 );
     localparam int      RAM_ADDR_W  = $clog2(RAM_WORDS);
-    localparam logic [63:0] RAM_WORDS_64 = RAM_WORDS;
+    localparam logic [63:0] RAM_WORDS_64 = 64'(RAM_WORDS);
 
     // -------------------------------------------------------------------------
     // Two BRAM arrays — identical contents, separate read ports
