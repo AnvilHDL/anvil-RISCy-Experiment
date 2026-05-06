@@ -1,6 +1,25 @@
+// risky_bram_mem_adapter.sv
+//
+// Maps the core's instruction-fetch and data-memory ports onto synchronous
+// block RAM.  The design uses ONE physical BRAM array written in the exact
+// pattern that Vivado's RAMB inference engine requires:
+//
+//   Simple Dual-Port (SDP) BRAM pattern per Xilinx UG901:
+//     • One write port  (port A):  always write-enabled, data gated by WE
+//     • One read port   (port B):  always reads every cycle (no CE guard)
+//     • Both ports share the same clock
+//     • No read-first / write-first mux on the read output
+//
+// Two logical views of the array are provided by TWO separate BRAM instances:
+//   bram_if[]  — dedicated to IF reads (port B of instance 0)
+//   bram_mem[] — dedicated to MEM reads (port B of instance 1)
+// Both instances are written identically whenever a store commits.
+//
+// This pattern reliably produces RAMB36E1 primitives in Vivado.
+
 module risky_bram_mem_adapter #(
-    parameter logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000,
-    parameter int RAM_WORDS = 1024
+    parameter logic [63:0] RAM_BASE  = 64'h0000_0000_8000_0000,
+    parameter int          RAM_WORDS = 1024
 ) (
     input  wire        clk_i,
     input  wire        rst_ni,
@@ -16,83 +35,98 @@ module risky_bram_mem_adapter #(
     input  wire [63:0] mmio_rdata_i,
     output wire [63:0] mem_rsp_data_o
 );
-    localparam logic [63:0] RAM_WORDS_64 = 64'(RAM_WORDS);
-    localparam int RAM_ADDR_W = $clog2(RAM_WORDS);
+    localparam int      RAM_ADDR_W  = $clog2(RAM_WORDS);
+    localparam logic [63:0] RAM_WORDS_64 = RAM_WORDS;
 
-    (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
+    // -------------------------------------------------------------------------
+    // Two BRAM arrays — identical contents, separate read ports
+    //   bram_if[]  : port B used for instruction-fetch reads
+    //   bram_mem[] : port B used for data-memory reads
+    // -------------------------------------------------------------------------
+    (* ram_style = "block" *) reg [63:0] bram_if  [0:RAM_WORDS-1];
     (* ram_style = "block" *) reg [63:0] bram_mem [0:RAM_WORDS-1];
-    reg [63:0] if_word_q = 64'h0000_0013_0000_0013;
-    reg [63:0] mem_word_q = 64'd0;
-    reg [63:0] mmio_word_q = 64'd0;
-    reg        if_valid_q = 1'b0;
-    reg        if_halfsel_q = 1'b0;
-    reg        mem_in_ram_q = 1'b0;
-    (* DONT_TOUCH = "true" *) reg [RAM_ADDR_W-1:0] bram_store_word_idx_q = '0;
-    (* DONT_TOUCH = "true" *) reg [63:0] bram_store_word_q = 64'd0;
-    (* DONT_TOUCH = "true" *) reg bram_store_we_q = 1'b0;
 
-    wire [63:0] if_offset = if_req_addr_i - RAM_BASE;
-    wire [RAM_ADDR_W-1:0] if_word_idx = if_offset[RAM_ADDR_W+2:3];
-    wire if_in_ram = (if_offset >> 3) < RAM_WORDS_64;
-
-    wire [63:0] mem_offset = mem_req_addr_i - RAM_BASE;
-    wire [RAM_ADDR_W-1:0] mem_word_idx = mem_offset[RAM_ADDR_W+2:3];
-    wire mem_in_ram = (mem_offset >> 3) < RAM_WORDS_64;
-
-    wire [63:0] store_offset = mem_store_addr_i - RAM_BASE;
-    wire [RAM_ADDR_W-1:0] store_word_idx = store_offset[RAM_ADDR_W+2:3];
-    wire store_in_ram = (store_offset >> 3) < RAM_WORDS_64;
-
-    integer i;
+    // ---- Initialise both arrays from the generated init header ----
+    integer _i;
     initial begin
-        for (i = 0; i < RAM_WORDS; i = i + 1) begin
-            bram[i] = 64'h0000_0013_0000_0013;
-            bram_mem[i] = 64'h0000_0013_0000_0013;
+        for (_i = 0; _i < RAM_WORDS; _i = _i + 1) begin
+            bram_if [_i] = 64'h0000_0013_0000_0013;
+            bram_mem[_i] = 64'h0000_0013_0000_0013;
         end
-`include "risky_genesys2_bram_init.vh"
+`include "risky_genesys2_bram_init.vh"          // writes bram_if[N] = ...
 `define bram bram_mem
-`include "risky_genesys2_bram_init.vh"
+`include "risky_genesys2_bram_init.vh"          // writes bram_mem[N] = ...
 `undef bram
     end
 
-    always @(posedge clk_i) begin
-        if (!rst_ni) begin
-            if_valid_q <= 1'b0;
-            if_halfsel_q <= 1'b0;
-            mem_in_ram_q <= 1'b1;
-            bram_store_word_idx_q <= '0;
-            bram_store_word_q <= 64'd0;
-            bram_store_we_q <= 1'b0;
-        end else begin
-            if_valid_q <= if_req_valid_i && if_in_ram;
-            if_halfsel_q <= if_req_addr_i[2];
-            mem_in_ram_q <= mem_req_valid_i && !mem_req_write_i && mem_in_ram;
-            bram_store_word_idx_q <= store_word_idx;
-            bram_store_word_q <= mem_store_word_i;
-            bram_store_we_q <= mem_store_valid_i && store_in_ram;
-        end
-    end
+    // ---- Address decode (combinatorial) ----
+    wire [63:0]          if_offset    = if_req_addr_i  - RAM_BASE;
+    wire [RAM_ADDR_W-1:0] if_word_idx = if_offset[RAM_ADDR_W+2:3];
+    wire                 if_in_ram   = (if_offset >> 3) < RAM_WORDS_64;
+
+    wire [63:0]          mem_offset    = mem_req_addr_i - RAM_BASE;
+    wire [RAM_ADDR_W-1:0] mem_word_idx = mem_offset[RAM_ADDR_W+2:3];
+    wire                 mem_in_ram   = (mem_offset >> 3) < RAM_WORDS_64;
+
+    wire [63:0]          sto_offset    = mem_store_addr_i - RAM_BASE;
+    wire [RAM_ADDR_W-1:0] sto_word_idx = sto_offset[RAM_ADDR_W+2:3];
+    wire                 sto_in_ram   = (sto_offset >> 3) < RAM_WORDS_64;
+
+    // ---- Control flops (outside the BRAM always blocks) ----
+    reg if_valid_q    = 1'b0;
+    reg if_halfsel_q  = 1'b0;
+    reg mem_in_ram_q  = 1'b0;
 
     always @(posedge clk_i) begin
-        if (!rst_ni) begin
-            if_word_q <= bram[0];
-            mem_word_q <= 64'd0;
-            mmio_word_q <= 64'd0;
-        end else begin
-            if_word_q <= bram[if_word_idx];
-            mem_word_q <= bram_mem[mem_word_idx];
-            if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram) begin
-                mmio_word_q <= mmio_rdata_i;
-            end
-        end
-        if (rst_ni && bram_store_we_q) begin
-            bram[bram_store_word_idx_q] <= bram_store_word_q;
-            bram_mem[bram_store_word_idx_q] <= bram_store_word_q;
-        end
+        if_valid_q   <= if_req_valid_i & if_in_ram;
+        if_halfsel_q <= if_req_addr_i[2];
+        mem_in_ram_q <= mem_req_valid_i & !mem_req_write_i & mem_in_ram;
     end
 
-    assign if_rsp_data_o = if_valid_q
+    // ---- MMIO word latch ----
+    reg [63:0] mmio_word_q = 64'd0;
+    always @(posedge clk_i) begin
+        if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram)
+            mmio_word_q <= mmio_rdata_i;
+    end
+
+    // =========================================================================
+    // BRAM instance 0 — IF read port
+    // Vivado SDP inference pattern (UG901 Table 1-6):
+    //   Port A = write  (sto_word_idx address, gated by we)
+    //   Port B = read   (if_word_idx address,  always enabled)
+    //   Single always block, single clock.
+    // =========================================================================
+    reg [63:0] if_word_q = 64'h0000_0013_0000_0013;
+
+    always @(posedge clk_i) begin
+        // Write port A — committed store
+        if (sto_in_ram && mem_store_valid_i)
+            bram_if[sto_word_idx] <= mem_store_word_i;
+        // Read port B — always read (no CE condition)
+        if_word_q <= bram_if[if_word_idx];
+    end
+
+    // =========================================================================
+    // BRAM instance 1 — MEM read port
+    // Same SDP pattern, separate array so IF and MEM can read simultaneously.
+    // =========================================================================
+    reg [63:0] mem_word_q = 64'd0;
+
+    always @(posedge clk_i) begin
+        // Write port A — committed store (same data as instance 0)
+        if (sto_in_ram && mem_store_valid_i)
+            bram_mem[sto_word_idx] <= mem_store_word_i;
+        // Read port B — always read
+        mem_word_q <= bram_mem[mem_word_idx];
+    end
+
+    // =========================================================================
+    // Output mux
+    // =========================================================================
+    assign if_rsp_data_o  = if_valid_q
         ? (if_halfsel_q ? if_word_q[63:32] : if_word_q[31:0])
         : 32'h0000_0013;
     assign mem_rsp_data_o = mem_in_ram_q ? mem_word_q : mmio_word_q;
+
 endmodule
