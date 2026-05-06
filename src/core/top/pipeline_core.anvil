@@ -285,6 +285,15 @@ proc pipeline_core() {
     reg mem_store_addr_q  : xlen_t;   // physical byte address of store
     reg mem_store_word_q  : xlen_t;   // full masked 64-bit word to write
     reg ex_alu_result_q   : xlen_t;   // mirrors next_ex_mem.alu_result for harness mem pre-populate
+    reg if_req_valid_q    : logic;    // observed IF request intent for external memory boundary
+    reg if_req_addr_q     : xlen_t;
+    reg mem_req_valid_q   : logic;    // observed MEM request intent for external memory boundary
+    reg mem_req_addr_q    : xlen_t;
+    reg mem_req_write_q   : logic;
+    reg mem_req_wdata_q   : xlen_t;
+    reg mem_req_width_q   : logic[3];
+    reg mem_mmio_read_valid_q : logic; // committed MMIO read side effect hook
+    reg mem_mmio_read_addr_q  : xlen_t;
     reg ex_mem_valid_obs_q : logic;   // current EX/MEM stage is presenting a memory request
     reg ex_mem_read_obs_q  : logic;   // current EX/MEM stage is presenting a load/AMO request
     reg ex_mem_write_obs_q : logic;   // current EX/MEM stage is presenting a store/AMO request
@@ -349,6 +358,15 @@ proc pipeline_core() {
                 set mem_store_addr_q := <(64'd0)::xlen_t>;
                 set mem_store_word_q := <(64'd0)::xlen_t>;
                 set ex_alu_result_q := <(64'd0)::xlen_t>;
+                set if_req_valid_q := 1'b0;
+                set if_req_addr_q := <(64'd0)::xlen_t>;
+                set mem_req_valid_q := 1'b0;
+                set mem_req_addr_q := <(64'd0)::xlen_t>;
+                set mem_req_write_q := 1'b0;
+                set mem_req_wdata_q := <(64'd0)::xlen_t>;
+                set mem_req_width_q := 3'd0;
+                set mem_mmio_read_valid_q := 1'b0;
+                set mem_mmio_read_addr_q := <(64'd0)::xlen_t>;
                 set ex_mem_valid_obs_q := 1'b0;
                 set ex_mem_read_obs_q := 1'b0;
                 set ex_mem_write_obs_q := 1'b0;
@@ -517,6 +535,10 @@ proc pipeline_core() {
             let mem_req_write =
                 mem_req_valid == 1'b1 &&
                 cur_ex_mem.ctrl.mem_write == 1'b1 >>
+            let mmio_read_now =
+                mem_active == 1'b1 &&
+                cur_ex_mem.ctrl.mem_read == 1'b1 &&
+                call is_mmio_addr(eff_mem_addr) == 1'b1 >>
             let any_store_now =
                 mem_active == 1'b1 &&
                 cur_ex_mem.ctrl.mem_write == 1'b1 >>
@@ -1085,6 +1107,17 @@ proc pipeline_core() {
                 set mem_store_addr_q  := if any_store_now == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
                 set mem_store_word_q  := if any_store_now == 1'b1 { store_masked } else { <(64'd0)::xlen_t> };
                 set ex_alu_result_q   := next_ex_mem.alu_result;
+                set if_req_valid_q :=
+                    if pipeline_stall == 1'b1 || retire_trap_now == 1'b1 || int_fire == 1'b1 { 1'b0 }
+                    else { 1'b1 };
+                set if_req_addr_q := cur_pc;
+                set mem_req_valid_q := mem_req_valid;
+                set mem_req_addr_q := if mem_req_valid == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
+                set mem_req_write_q := mem_req_write;
+                set mem_req_wdata_q := if mem_req_write == 1'b1 { store_masked } else { <(64'd0)::xlen_t> };
+                set mem_req_width_q := if mem_req_valid == 1'b1 { cur_ex_mem.ctrl.mem_width } else { 3'd0 };
+                set mem_mmio_read_valid_q := mmio_read_now;
+                set mem_mmio_read_addr_q := if mmio_read_now == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
                 set ex_mem_valid_obs_q := mem_req_valid;
                 set ex_mem_read_obs_q := mem_req_read;
                 set ex_mem_write_obs_q := mem_req_write;

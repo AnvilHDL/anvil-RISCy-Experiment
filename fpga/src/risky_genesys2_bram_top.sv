@@ -114,6 +114,8 @@ module risky_genesys2_bram_top (
     wire [63:0] core_mem_addr;
     wire        core_mem_read;
     wire        core_mem_write;
+    wire        core_mmio_read_valid;
+    wire [63:0] core_mmio_read_addr;
     wire        core_store_valid;
     wire [63:0] core_store_addr;
     wire [63:0] core_store_word;
@@ -240,9 +242,18 @@ module risky_genesys2_bram_top (
         .sv39_mem_pf_i      (sv39_mem_pf),
         .sv39_mem_pf_store_i(sv39_mem_pf_store),
         .pc_o               (core_pc),
+        .if_req_valid_o     (),
+        .if_req_addr_o      (),
         .mem_addr_o         (core_mem_addr),
+        .mem_req_valid_o    (),
+        .mem_req_addr_o     (),
+        .mem_req_write_o    (),
+        .mem_req_wdata_o    (),
+        .mem_req_width_o    (),
         .mem_read_o         (core_mem_read),
         .mem_write_o        (core_mem_write),
+        .mem_mmio_read_valid_o(core_mmio_read_valid),
+        .mem_mmio_read_addr_o (core_mmio_read_addr),
         .mem_store_valid_o  (core_store_valid),
         .mem_store_addr_o   (core_store_addr),
         .mem_store_word_o   (core_store_word),
@@ -267,6 +278,8 @@ module risky_genesys2_bram_top (
         .mem_addr_i    (core_mem_addr),
         .mem_read_i    (core_mem_read),
         .mem_write_i   (core_mem_write),
+        .mmio_read_valid_i(core_mmio_read_valid),
+        .mmio_read_addr_i (core_mmio_read_addr),
         .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) ||
                                                (core_store_addr_q[31:24] == 8'h02) ||
                                                (core_store_addr_q[31:26] == 6'd3))),

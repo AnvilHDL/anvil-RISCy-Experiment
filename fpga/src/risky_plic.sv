@@ -2,7 +2,8 @@ module risky_plic (
     input  wire        clk_i,
     input  wire        rst_ni,
     input  wire [63:0] mem_addr_i,
-    input  wire        mem_read_i,
+    input  wire        claim_read_i,
+    input  wire [63:0] claim_addr_i,
     input  wire        store_valid_i,
     input  wire [63:0] store_addr_i,
     input  wire [63:0] store_data_i,
@@ -105,7 +106,7 @@ module risky_plic (
                 end
             end
 
-            if (mem_read_i && (mem_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_SCLAIM0 && best_irq_id != 32'd0) begin
+            if (claim_read_i && (claim_addr_i & 64'hffff_ffff_ffff_fffc) == PLIC_SCLAIM0 && best_irq_id != 32'd0) begin
                 if (best_irq_id == UART_IRQ_ID[31:0]) begin
                     pending_uart_q <= 1'b0;
                 end

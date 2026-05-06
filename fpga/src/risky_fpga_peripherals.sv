@@ -9,6 +9,8 @@ module risky_fpga_peripherals #(
     input  wire [63:0] mem_addr_i,
     input  wire        mem_read_i,
     input  wire        mem_write_i,
+    input  wire        mmio_read_valid_i,
+    input  wire [63:0] mmio_read_addr_i,
     input  wire        store_valid_i,
     input  wire [63:0] store_addr_i,
     input  wire [63:0] store_data_i,
@@ -227,7 +229,8 @@ module risky_fpga_peripherals #(
                 rx_count_q <= rx_count_q + {{(UART_COUNT_W-1){1'b0}}, 1'b1};
             end
 
-            if (mem_read_i && (mem_addr_i & 64'hffff_ffff_ffff_fff0) == UART_BASE && mem_reg_off == 4'h0 && !uart_dlab && !rx_fifo_empty) begin
+            if (mmio_read_valid_i && (mmio_read_addr_i & 64'hffff_ffff_ffff_fff0) == UART_BASE &&
+                mmio_read_addr_i[3:0] == 4'h0 && !uart_dlab && !rx_fifo_empty) begin
                 rx_data_hold_q <= rx_fifo[rx_rd_ptr_q];
                 rx_pop_q <= 1'b1;
                 rx_pop_addr_q <= rx_rd_ptr_q;
@@ -281,7 +284,8 @@ module risky_fpga_peripherals #(
         .clk_i        (clk_i),
         .rst_ni       (rst_ni),
         .mem_addr_i   (mem_addr_i),
-        .mem_read_i   (mem_read_i),
+        .claim_read_i (mmio_read_valid_i),
+        .claim_addr_i (mmio_read_addr_i),
         .store_valid_i(store_valid_i && store_addr_i[31:26] == 6'd3),
         .store_addr_i (store_addr_i),
         .store_data_i (store_data_i),
