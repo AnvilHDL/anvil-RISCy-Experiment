@@ -112,6 +112,8 @@ module risky_genesys2_bram_top (
 
     wire [63:0] core_pc;
     wire [63:0] core_mem_addr;
+    wire        core_mem_read;
+    wire        core_mem_write;
     wire        core_store_valid;
     wire [63:0] core_store_addr;
     wire [63:0] core_store_word;
@@ -122,6 +124,18 @@ module risky_genesys2_bram_top (
     wire [63:0] core_mtime;
     wire [63:0] core_mtimecmp;
     wire [63:0] core_stimecmp;
+    wire [1:0]  core_priv;
+    wire [63:0] core_satp;
+    wire        core_sv39_flush;
+    wire [63:0] core_ext_mip;
+    wire        sv39_stall;
+    wire        sv39_if_valid;
+    wire [63:0] sv39_if_pa;
+    wire        sv39_if_pf;
+    wire        sv39_mem_valid;
+    wire [63:0] sv39_mem_pa;
+    wire        sv39_mem_pf;
+    wire        sv39_mem_pf_store;
 
     (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
     reg [63:0] fetch_word_q = 64'h0000_0013_0000_0013;
@@ -214,15 +228,29 @@ module risky_genesys2_bram_top (
     pipeline_core_bram_if i_core (
         .clk_i              (clk_core),
         .rst_ni             (rst_ni),
+        .ext_mip_i          (core_ext_mip),
         .imem_rdata_i       (core_imem_rdata),
         .mem_rdata_i        (core_mem_rdata),
+        .sv39_stall_i       (sv39_stall),
+        .sv39_if_valid_i    (sv39_if_valid),
+        .sv39_if_pa_i       (sv39_if_pa),
+        .sv39_if_pf_i       (sv39_if_pf),
+        .sv39_mem_valid_i   (sv39_mem_valid),
+        .sv39_mem_pa_i      (sv39_mem_pa),
+        .sv39_mem_pf_i      (sv39_mem_pf),
+        .sv39_mem_pf_store_i(sv39_mem_pf_store),
         .pc_o               (core_pc),
         .mem_addr_o         (core_mem_addr),
+        .mem_read_o         (core_mem_read),
+        .mem_write_o        (core_mem_write),
         .mem_store_valid_o  (core_store_valid),
         .mem_store_addr_o   (core_store_addr),
         .mem_store_word_o   (core_store_word),
         .sim_exit_valid_o   (core_sim_exit_valid),
         .sim_exit_code_o    (core_sim_exit_code),
+        .priv_o             (core_priv),
+        .satp_o             (core_satp),
+        .sv39_flush_o       (core_sv39_flush),
         .mtime_o            (core_mtime),
         .mtimecmp_o         (core_mtimecmp),
         .stimecmp_o         (core_stimecmp)
@@ -237,6 +265,8 @@ module risky_genesys2_bram_top (
         .rst_ni        (rst_ni),
         .rx_i          (rx),
         .mem_addr_i    (core_mem_addr),
+        .mem_read_i    (core_mem_read),
+        .mem_write_i   (core_mem_write),
         .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) || (core_store_addr_q[31:24] == 8'h02))),
         .store_addr_i  (core_store_addr_q),
         .store_data_i  (core_store_word_q),
@@ -244,10 +274,20 @@ module risky_genesys2_bram_top (
         .mtimecmp_i    (core_mtimecmp),
         .stimecmp_i    (core_stimecmp),
         .mem_rdata_o   (mmio_rdata),
+        .ext_mip_o     (core_ext_mip),
         .tx_o          (tx),
         .led_o         (led_state),
         .fan_pwm_o     (fan_pwm)
     );
+
+    assign sv39_stall = 1'b0;
+    assign sv39_if_valid = 1'b0;
+    assign sv39_if_pa = 64'd0;
+    assign sv39_if_pf = 1'b0;
+    assign sv39_mem_valid = 1'b0;
+    assign sv39_mem_pa = 64'd0;
+    assign sv39_mem_pf = 1'b0;
+    assign sv39_mem_pf_store = 1'b0;
 
     assign led[0] = rst_ni;
     assign led[1] = heartbeat_q[22];

@@ -77,6 +77,21 @@ report_utilization -hierarchical -file "$build_dir/reports/post_route_utilizatio
 report_clock_interaction -file "$build_dir/reports/clock_interaction.rpt"
 report_drc -file "$build_dir/reports/post_route_drc.rpt"
 
+set setup_paths [get_timing_paths -max_paths 1 -nworst 1 -setup]
+set hold_paths [get_timing_paths -max_paths 1 -nworst 1 -hold]
+set worst_setup_slack 0.0
+set worst_hold_slack 0.0
+if {[llength $setup_paths] > 0} {
+  set worst_setup_slack [get_property SLACK [lindex $setup_paths 0]]
+}
+if {[llength $hold_paths] > 0} {
+  set worst_hold_slack [get_property SLACK [lindex $hold_paths 0]]
+}
+puts "Post-route timing guard: WNS=$worst_setup_slack WHS=$worst_hold_slack"
+if {$worst_setup_slack < 0.0 || $worst_hold_slack < 0.0} {
+  error "timing not met: WNS=$worst_setup_slack WHS=$worst_hold_slack"
+}
+
 write_checkpoint -force "$build_dir/post_route.dcp"
 write_bitstream -force "$build_dir/${project_name}.bit"
 

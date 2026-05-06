@@ -285,6 +285,9 @@ proc pipeline_core() {
     reg mem_store_addr_q  : xlen_t;   // physical byte address of store
     reg mem_store_word_q  : xlen_t;   // full masked 64-bit word to write
     reg ex_alu_result_q   : xlen_t;   // mirrors next_ex_mem.alu_result for harness mem pre-populate
+    reg ex_mem_valid_obs_q : logic;   // current EX/MEM stage is presenting a memory request
+    reg ex_mem_read_obs_q  : logic;   // current EX/MEM stage is presenting a load/AMO request
+    reg ex_mem_write_obs_q : logic;   // current EX/MEM stage is presenting a store/AMO request
     // Iterative RTL divider for RV64M DIV/REM. One restoring-division step per
     // cycle keeps Anvil elaboration bounded and is synthesizable.
     reg div_busy_q       : logic;
@@ -346,6 +349,9 @@ proc pipeline_core() {
                 set mem_store_addr_q := <(64'd0)::xlen_t>;
                 set mem_store_word_q := <(64'd0)::xlen_t>;
                 set ex_alu_result_q := <(64'd0)::xlen_t>;
+                set ex_mem_valid_obs_q := 1'b0;
+                set ex_mem_read_obs_q := 1'b0;
+                set ex_mem_write_obs_q := 1'b0;
                 set div_busy_q := 1'b0;
                 set div_count_q := 7'd0;
                 set div_q_q := <(64'd0)::xlen_t>;
@@ -501,6 +507,16 @@ proc pipeline_core() {
                 int_fire == 1'b0 &&
                 cur_ex_mem.valid == 1'b1 &&
                 mem_exc.has_exc == 1'b0 >>
+            let mem_req_valid =
+                cur_ex_mem.valid == 1'b1 &&
+                cur_ex_mem.exc.has_exc == 1'b0 &&
+                (cur_ex_mem.ctrl.mem_read == 1'b1 || cur_ex_mem.ctrl.mem_write == 1'b1) >>
+            let mem_req_read =
+                mem_req_valid == 1'b1 &&
+                cur_ex_mem.ctrl.mem_read == 1'b1 >>
+            let mem_req_write =
+                mem_req_valid == 1'b1 &&
+                cur_ex_mem.ctrl.mem_write == 1'b1 >>
             let any_store_now =
                 mem_active == 1'b1 &&
                 cur_ex_mem.ctrl.mem_write == 1'b1 >>
@@ -1069,6 +1085,9 @@ proc pipeline_core() {
                 set mem_store_addr_q  := if any_store_now == 1'b1 { eff_mem_addr } else { <(64'd0)::xlen_t> };
                 set mem_store_word_q  := if any_store_now == 1'b1 { store_masked } else { <(64'd0)::xlen_t> };
                 set ex_alu_result_q   := next_ex_mem.alu_result;
+                set ex_mem_valid_obs_q := mem_req_valid;
+                set ex_mem_read_obs_q := mem_req_read;
+                set ex_mem_write_obs_q := mem_req_write;
                 set div_busy_q :=
                     if div_start_now == 1'b1 { 1'b1 }
                     else if cur_div_done == 1'b1 && sv39_pipeline_stall == 1'b0 { 1'b0 }

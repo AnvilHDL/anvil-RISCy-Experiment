@@ -20,13 +20,15 @@ The current FPGA targets are:
 - `fpga/scripts/program_bram_genesys2.tcl`
 
 The smoke wrapper packages the generated `pipeline_core` RTL behind Genesys 2
-clock/reset, LED, fan, and UART-idle pins. The BRAM wrapper packages a generated
+clock/reset, LED, fan, and UART pins. The BRAM wrapper packages a generated
 `pipeline_core_bram_if` bridge with a small synthesizable memory and a separate
-FPGA peripheral block for LED, UART, and CLINT readback. Both flows avoid large
-Anvil memories so RTL export stays bounded.
+FPGA peripheral block for LED, NS16550-style UART, minimal PLIC, CLINT readback,
+and external interrupt injection. Both flows avoid large Anvil memories so RTL
+export stays bounded.
 
 This is not yet a full FPGA SoC capable of booting xv6 on the board. xv6 still
-depends on simulation-backed RAM, Sv39 PTW, UART/PLIC/virtio, and disk behavior.
+depends on simulation-backed RAM, full RTL Sv39 PTW/TLB attachment, virtio, and
+disk behavior.
 
 ## Commands
 
@@ -105,8 +107,12 @@ Expected first-board behavior for the BRAM target:
 - the PROG/UART USB port emits software-authored UART text at 115200 baud.
 - the bundled BRAM program writes `BOOT\r\nB\r\nL=5A\r\n` through the UART
   THR register at `0x10000000` and polls the UART LSR at `0x10000005`.
-- the BRAM wrapper returns CLINT readback for `mtime` at `0x0200bff8` and
-  `mtimecmp` at `0x02004000` using timer state already owned by the RTL core.
+- the BRAM wrapper returns CLINT readback for `mtime` at `0x0200bff8`,
+  `mtimecmp` at `0x02004000`, and `stimecmp` at `0x02004008` using timer state
+  already owned by the RTL core.
+- the UART block now exposes a minimal NS16550-style register subset including
+  RX/TX, IER/IIR/LCR/MCR/LSR/SCR, and routes source `10` through a minimal PLIC
+  at the same `0x0c...` addresses used by the simulator.
 
 To watch the BRAM UART stream on the laptop attached to the board, open the
 dedicated UART micro-USB port at 115200 8N1 before programming or pressing
@@ -135,8 +141,9 @@ must eventually own. The smoke and BRAM wrappers are still useful because they:
 2. Move RAM behind a synthesizable BRAM or AXI-attached memory subsystem.
 3. Split the BRAM-side FPGA peripheral block into a bus-facing UART/GPIO/timer
    block rather than board-top glue.
-4. Add UART RX and interrupt plumbing behind the same peripheral boundary.
-5. Move Sv39 PTW/TLB into RTL once memory reads use the common interface.
+4. Replace the current BRAM-side exported Sv39 signals with a fully attached RTL
+   PTW/TLB block on a shared memory interface.
+5. Replace the BRAM-only memory path with a DDR/MIG-backed memory subsystem.
 6. Choose the xv6 disk path: SD-card SPI, UART loader, debug bridge, or host
    bridge.
 7. Replace BRAM-only memory with a wider memory subsystem and run xv6 on it.

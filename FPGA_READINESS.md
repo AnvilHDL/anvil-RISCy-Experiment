@@ -100,14 +100,17 @@ and disk simulation services with synthesizable hardware.
 Current non-production wrapper behavior:
 
 - the board top owns MMCM clocking, reset release, BRAM staging, and heartbeat.
-- the BRAM path uses a separate FPGA peripheral block for GPIO, UART TX, and
-  CLINT load readback instead of wrapper-generated text state machines.
+- the BRAM path uses a separate FPGA peripheral block for GPIO, NS16550-style
+  UART TX/RX, minimal PLIC/SEIP wiring, and CLINT load readback instead of
+  wrapper-generated text state machines.
 - BRAM bring-up drives the NS16550-style UART THR/LSR addresses
   (`0x10000000`, `0x10000005`) and a simple GPIO MMIO window at `0x10000008`.
 - the bundled BRAM bring-up payload writes `BOOT\r\nB\r\nL=5A\r\n` in software.
 - LEDs show reset, heartbeat, and the low six bits of the GPIO byte.
-- No real UART RX handling, PLIC/SEIP path, storage, or boot-loader hardware is
-  attached.
+- The BRAM target now exports external interrupt and Sv39-side signals from the
+  generated core, but a full attached RTL PTW/TLB and DDR-backed memory path are
+  still missing.
+- No storage or boot-loader hardware is attached.
 
 These are acceptable for synthesis smoke only. Do not claim board software
 execution until the wrapper is extended into a real SoC.
@@ -121,12 +124,13 @@ until capability state is migrated in bounded scalarized RTL slices.
 1. Keep `scripts/verify_all.sh` passing on every change.
 2. Run the BRAM-backed LED MMIO target on Genesys 2.
 3. Replace the generated BRAM bridge with a first-class Anvil memory interface.
-4. Add an RTL Sv39 TLB/PTW with bounded multi-cycle stalls.
-5. Add a real bus-facing peripheral block for UART, GPIO, timer read/write, and
-   external interrupt wiring.
-6. Decide the FPGA storage path for xv6 filesystem access.
-7. Run xv6 in Verilator without simulation-only architectural patches.
-8. Replace BRAM-only execution with a larger memory subsystem and keep timing
+4. Attach an RTL Sv39 TLB/PTW with bounded multi-cycle stalls to the exported
+   core-side translation boundary.
+5. Keep the UART/PLIC/GPIO/timer peripheral block behind the same MMIO
+   boundary and extend it only through that interface.
+6. Replace BRAM-only execution with a DDR/MIG-backed memory subsystem.
+7. Decide the xv6 storage path for filesystem access.
+8. Run xv6 in Verilator without simulation-only architectural patches and keep timing
    closure intact on Genesys 2.
 
 Any feature that depends on the C++ harness should be marked simulation-backed
