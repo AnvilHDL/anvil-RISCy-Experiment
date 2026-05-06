@@ -14,10 +14,10 @@ _start:
     li   t1, 0x02
     sb   t1, 0(t0)
 
-    # Stage 1: aligned 64-bit BRAM data load returns the expected low byte.
+    # Stage 1: aligned 64-bit BRAM data load returns the full 64-bit constant.
     la   t4, probe_word
     ld   t2, 0(t4)
-    li   t1, 'R'
+    li   t1, 0x1122334455667788
     bne  t2, t1, ld_fail
     li   t1, 0x08
     sb   t1, 0(t0)
@@ -80,6 +80,6 @@ char_wait:
     .section .rodata
     .balign 8
 probe_word:
-    .dword 'R'
+    .dword 0x1122334455667788
 msg_banner:
     .asciz "RISCy ALIVE!\r\n"
