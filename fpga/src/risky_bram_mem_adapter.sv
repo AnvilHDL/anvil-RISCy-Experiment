@@ -93,12 +93,16 @@ module risky_bram_mem_adapter #(
 
     // =========================================================================
     // Output mux — combinatorial to match Anvil's 0-cycle memory assumption
+    //
+    // We CANNOT use `_valid_i` signals to gate these combinatorial outputs 
+    // because Anvil exports them as pipeline registers (delayed by 1 cycle).
+    // The C++ testbench reads memory unconditionally; we must do the same.
     // =========================================================================
-    assign if_rsp_data_o = (if_req_valid_i && if_in_ram)
+    assign if_rsp_data_o = if_in_ram
         ? (if_req_addr_i[2] ? if_word[63:32] : if_word[31:0])
         : 32'h0000_0013; // nop
 
-    assign mem_rsp_data_o = (mem_req_valid_i && mem_in_ram)
+    assign mem_rsp_data_o = mem_in_ram
         ? mem_word
         : mmio_rdata_i;
 
