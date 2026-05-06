@@ -22,7 +22,6 @@ module risky_bram_mem_adapter #(
     parameter int          RAM_WORDS = 1024
 ) (
     input  wire        clk_i,
-    input  wire        rst_ni,
     input  wire        if_req_valid_i,
     input  wire [63:0] if_req_addr_i,
     output wire [31:0] if_rsp_data_o,
