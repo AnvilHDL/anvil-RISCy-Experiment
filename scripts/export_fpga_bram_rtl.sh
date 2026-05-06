@@ -99,6 +99,15 @@ text = text.replace(
 open(dst, "w", encoding="utf-8").write(text)
 PY
 
+if ! rg -q "= imem_rdata_i;" "$PATCHED_CORE"; then
+  echo "[fpga-bram] FATAL: imem_rdata_i patch not applied" >&2
+  exit 1
+fi
+if ! rg -q "= mem_rdata_i;" "$PATCHED_CORE"; then
+  echo "[fpga-bram] FATAL: mem_rdata_i patch not applied" >&2
+  exit 1
+fi
+
 cp "$BRAM_WRAPPER_SRC" "$BRAM_WRAPPER_OUT"
 cp "$PERIPH_SRC" "$PERIPH_OUT"
 cp "$UART_TX_SRC" "$UART_TX_OUT"

@@ -98,17 +98,17 @@ module risky_genesys2_bram_top (
     );
 `endif
 
-    reg [3:0] reset_sync = 4'h0;
+    reg [7:0] reset_sync = 8'h00;
     wire core_resetn = cpu_resetn && core_clk_locked;
     always @(posedge clk_core) begin
         if (!core_resetn) begin
-            reset_sync <= 4'h0;
+            reset_sync <= 8'h00;
         end else begin
-            reset_sync <= {reset_sync[2:0], 1'b1};
+            reset_sync <= {reset_sync[6:0], 1'b1};
         end
     end
 
-    wire rst_ni = reset_sync[3];
+    wire rst_ni = reset_sync[7];
 
     wire [63:0] core_pc;
     wire [63:0] core_mem_addr;
@@ -128,6 +128,7 @@ module risky_genesys2_bram_top (
     reg [63:0] mem_word_q = 64'd0;
     reg [63:0] mmio_word_q = 64'd0;
     reg [31:0] heartbeat_q = 32'd0;
+    reg        fetch_valid_q = 1'b0;
 
     reg [9:0] pc_word_idx_q = 10'd0;
     reg [2:0] pc_byte_idx_q = 3'd0;
@@ -146,7 +147,9 @@ module risky_genesys2_bram_top (
     wire [63:0] mmio_rdata;
     wire [7:0] led_state;
 
-    assign core_imem_rdata = pc_byte_idx_q[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
+    assign core_imem_rdata = fetch_valid_q
+        ? (pc_byte_idx_q[2] ? fetch_word_q[63:32] : fetch_word_q[31:0])
+        : 32'h0000_0013;
     assign core_mem_rdata = mem_in_ram_q ? mem_word_q : mmio_word_q;
 
     integer i;
@@ -172,6 +175,7 @@ module risky_genesys2_bram_top (
             bram_store_word_idx_q <= 10'd0;
             bram_store_word_q <= 64'd0;
             bram_store_we_q <= 1'b0;
+            fetch_valid_q <= 1'b0;
         end else begin
             logic [63:0] pc_offset;
             logic [63:0] mem_offset;
@@ -196,14 +200,21 @@ module risky_genesys2_bram_top (
             bram_store_word_idx_q <= store_word_idx_q;
             bram_store_word_q <= core_store_word_q;
             bram_store_we_q <= core_store_valid_q && store_in_ram_q;
+            fetch_valid_q <= 1'b1;
         end
     end
 
     always @(posedge clk_core) begin
-        fetch_word_q <= pc_in_ram_q ? bram[pc_word_idx_q] : 64'h0000_0013_0000_0013;
-        mem_word_q <= mem_in_ram_q ? bram[mem_word_idx_q] : 64'd0;
-        mmio_word_q <= mmio_rdata;
-        if (bram_store_we_q) begin
+        if (!rst_ni) begin
+            fetch_word_q <= bram[0];
+            mem_word_q <= 64'd0;
+            mmio_word_q <= 64'd0;
+        end else begin
+            fetch_word_q <= pc_in_ram_q ? bram[pc_word_idx_q] : 64'h0000_0013_0000_0013;
+            mem_word_q <= mem_in_ram_q ? bram[mem_word_idx_q] : 64'd0;
+            mmio_word_q <= mmio_rdata;
+        end
+        if (rst_ni && bram_store_we_q) begin
             bram[bram_store_word_idx_q] <= bram_store_word_q;
         end
     end
@@ -242,7 +253,7 @@ module risky_genesys2_bram_top (
         .rst_ni        (rst_ni),
         .rx_i          (rx),
         .mem_addr_i    (core_mem_addr),
-        .store_valid_i (core_store_valid_q && !store_in_ram_q),
+        .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) || (core_store_addr_q[31:24] == 8'h02))),
         .store_addr_i  (core_store_addr_q),
         .store_data_i  (core_store_word_q),
         .mtime_i       (core_mtime),

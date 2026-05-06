@@ -17,6 +17,8 @@ set_false_path -from [get_ports { cpu_resetn }]
 
 set_property -dict { PACKAGE_PIN Y20 IOSTANDARD LVCMOS33 } [get_ports { rx }]
 set_property -dict { PACKAGE_PIN Y23 IOSTANDARD LVCMOS33 } [get_ports { tx }]
+set_false_path -from [get_ports { rx }]
+set_false_path -to [get_ports { tx }]
 
 set_property -dict { PACKAGE_PIN T28 IOSTANDARD LVCMOS33 } [get_ports { led[0] }]
 set_property -dict { PACKAGE_PIN V19 IOSTANDARD LVCMOS33 } [get_ports { led[1] }]
