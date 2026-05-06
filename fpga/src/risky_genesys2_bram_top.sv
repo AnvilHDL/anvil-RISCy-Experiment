@@ -257,7 +257,7 @@ module risky_genesys2_bram_top (
         .clk_i         (clk_core),
         .rst_ni        (rst_ni),
         .rx_i          (rx),
-        .mem_addr_i    (core_mem_addr),
+        .mem_addr_i    (core_mem_req_addr),
         .mmio_read_valid_i(core_mmio_read_valid),
         .mmio_read_addr_i (core_mmio_read_addr),
         .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) ||
