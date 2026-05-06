@@ -73,61 +73,36 @@ module risky_bram_mem_adapter #(
     wire [RAM_ADDR_W-1:0] sto_word_idx = sto_offset[RAM_ADDR_W+2:3];
     wire                 sto_in_ram   = (sto_offset >> 3) < RAM_WORDS_64;
 
-    // ---- Control flops (outside the BRAM always blocks) ----
-    reg if_valid_q    = 1'b0;
-    reg if_halfsel_q  = 1'b0;
-    reg mem_in_ram_q  = 1'b0;
-
-    always @(posedge clk_i) begin
-        if_valid_q   <= if_req_valid_i & if_in_ram;
-        if_halfsel_q <= if_req_addr_i[2];
-        mem_in_ram_q <= mem_req_valid_i & !mem_req_write_i & mem_in_ram;
-    end
-
-    // ---- MMIO word latch ----
-    reg [63:0] mmio_word_q = 64'd0;
-    always @(posedge clk_i) begin
-        if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram)
-            mmio_word_q <= mmio_rdata_i;
-    end
-
     // =========================================================================
-    // BRAM instance 0 — IF read port
-    // Vivado SDP inference pattern (UG901 Table 1-6):
-    //   Port A = write  (sto_word_idx address, gated by we)
-    //   Port B = read   (if_word_idx address,  always enabled)
-    //   Single always block, single clock.
+    // Read data
+    //
+    // The FPGA bring-up core expects a "prefilled" fetch/load contract rather
+    // than an explicit ready/valid handshake. Keep the reads combinational so
+    // the wrapper presents the current address's data in the same cycle.
     // =========================================================================
-    reg [63:0] if_word_q = 64'h0000_0013_0000_0013;
+    wire [63:0] if_word_r  = bram[if_word_idx];
+    wire [63:0] mem_word_r = bram_mem[mem_word_idx];
 
     always @(posedge clk_i) begin
         // Write port A — committed store
         if (sto_in_ram && mem_store_valid_i)
             bram[sto_word_idx] <= mem_store_word_i;
-        // Read port B — always read (no CE condition)
-        if_word_q <= bram[if_word_idx];
     end
-
-    // =========================================================================
-    // BRAM instance 1 — MEM read port
-    // Same SDP pattern, separate array so IF and MEM can read simultaneously.
-    // =========================================================================
-    reg [63:0] mem_word_q = 64'd0;
 
     always @(posedge clk_i) begin
         // Write port A — committed store (same data as instance 0)
         if (sto_in_ram && mem_store_valid_i)
             bram_mem[sto_word_idx] <= mem_store_word_i;
-        // Read port B — always read
-        mem_word_q <= bram_mem[mem_word_idx];
     end
 
     // =========================================================================
     // Output mux
     // =========================================================================
-    assign if_rsp_data_o  = if_valid_q
-        ? (if_halfsel_q ? if_word_q[63:32] : if_word_q[31:0])
+    assign if_rsp_data_o  = (if_req_valid_i && if_in_ram)
+        ? (if_req_addr_i[2] ? if_word_r[63:32] : if_word_r[31:0])
         : 32'h0000_0013;
-    assign mem_rsp_data_o = mem_in_ram_q ? mem_word_q : mmio_word_q;
+    assign mem_rsp_data_o = (mem_req_valid_i && !mem_req_write_i)
+        ? (mem_in_ram ? mem_word_r : mmio_rdata_i)
+        : 64'd0;
 
 endmodule
