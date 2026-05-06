@@ -99,6 +99,7 @@ module risky_fpga_peripherals #(
 
     wire [63:0] plic_rdata;
     wire [63:0] plic_ext_mip;
+    (* keep = "true" *) wire _unused_mem_rw_sink = mem_read_i | mem_write_i;
 
     function automatic [7:0] mmio_store_byte;
         input [63:0] addr;

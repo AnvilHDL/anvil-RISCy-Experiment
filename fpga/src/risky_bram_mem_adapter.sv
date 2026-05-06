@@ -20,6 +20,7 @@ module risky_bram_mem_adapter #(
     localparam int RAM_ADDR_W = $clog2(RAM_WORDS);
 
     (* ram_style = "block" *) reg [63:0] bram [0:RAM_WORDS-1];
+    (* ram_style = "block" *) reg [63:0] bram_mem [0:RAM_WORDS-1];
     reg [63:0] if_word_q = 64'h0000_0013_0000_0013;
     reg [63:0] mem_word_q = 64'd0;
     reg [63:0] mmio_word_q = 64'd0;
@@ -46,8 +47,12 @@ module risky_bram_mem_adapter #(
     initial begin
         for (i = 0; i < RAM_WORDS; i = i + 1) begin
             bram[i] = 64'h0000_0013_0000_0013;
+            bram_mem[i] = 64'h0000_0013_0000_0013;
         end
 `include "risky_genesys2_bram_init.vh"
+        for (i = 0; i < RAM_WORDS; i = i + 1) begin
+            bram_mem[i] = bram[i];
+        end
     end
 
     always @(posedge clk_i) begin
@@ -77,7 +82,7 @@ module risky_bram_mem_adapter #(
             if_word_q <= (if_req_valid_i && if_in_ram) ? bram[if_word_idx] : 64'h0000_0013_0000_0013;
             if (mem_req_valid_i && !mem_req_write_i) begin
                 if (mem_in_ram) begin
-                    mem_word_q <= bram[mem_word_idx];
+                    mem_word_q <= bram_mem[mem_word_idx];
                 end else begin
                     mmio_word_q <= mmio_rdata_i;
                 end
@@ -85,6 +90,7 @@ module risky_bram_mem_adapter #(
         end
         if (rst_ni && bram_store_we_q) begin
             bram[bram_store_word_idx_q] <= bram_store_word_q;
+            bram_mem[bram_store_word_idx_q] <= bram_store_word_q;
         end
     end
 

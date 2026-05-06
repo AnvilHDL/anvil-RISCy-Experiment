@@ -107,7 +107,15 @@ text = text.replace(
     "  output logic[63:0] mtime_o,\n"
     "  output logic[63:0] mtimecmp_o,\n"
     "  output logic[63:0] stimecmp_o\n"
-    ");",
+    ");\n"
+    "  (* keep = \"true\" *) wire _unused_sv39_sink = sv39_stall_i |\n"
+    "      sv39_if_valid_i |\n"
+    "      ^sv39_if_pa_i |\n"
+    "      sv39_if_pf_i |\n"
+    "      sv39_mem_valid_i |\n"
+    "      ^sv39_mem_pa_i |\n"
+    "      sv39_mem_pf_i |\n"
+    "      sv39_mem_pf_store_i;",
     1,
 )
 text, n = re.subn(r"assign (\S+) = imem_rdata_q_q;", r"assign \1 = imem_rdata_i;", text, count=1)
