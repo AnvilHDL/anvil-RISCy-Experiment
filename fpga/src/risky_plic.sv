@@ -37,7 +37,8 @@ module risky_plic (
         32'd0;
 
     wire [2:0] mem_byte_off = mem_addr_i[2:0];
-    wire [63:0] claim_rdata = {32'd0, best_irq_id} << (mem_byte_off * 8);
+    wire [2:0] claim_byte_off = claim_addr_i[2:0];
+    wire [63:0] claim_rdata = {32'd0, best_irq_id} << (claim_byte_off * 8);
     wire [31:0] pending_word_32 = ({31'd0, pending_uart_q} << UART_IRQ_ID) |
                                   ({31'd0, pending_virtio_q} << VIRTIO_IRQ_ID);
     wire [63:0] pending_bits = {32'd0, pending_word_32} << (mem_byte_off * 8);
