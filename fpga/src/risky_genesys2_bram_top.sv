@@ -143,6 +143,9 @@ module risky_genesys2_bram_top (
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
     reg       core_store_valid_q = 1'b0;
+    reg [63:0] last_mmio_store_addr_q = 64'd0;
+    reg [63:0] last_mmio_store_word_q = 64'd0;
+    reg       last_mmio_store_valid_q = 1'b0;
     (* DONT_TOUCH = "true" *) reg [9:0] bram_store_word_idx_q = 10'd0;
     (* DONT_TOUCH = "true" *) reg [63:0] bram_store_word_q = 64'd0;
     (* DONT_TOUCH = "true" *) reg       bram_store_we_q = 1'b0;
@@ -247,17 +250,27 @@ module risky_genesys2_bram_top (
             led_msg_byte_q <= 8'h00;
             exit_msg_state_q <= 5'd0;
             exit_code_latched_q <= 64'd0;
+            last_mmio_store_addr_q <= 64'd0;
+            last_mmio_store_word_q <= 64'd0;
+            last_mmio_store_valid_q <= 1'b0;
         end else begin
+            logic store_mmio_event;
+
             heartbeat_q <= heartbeat_q + 32'd1;
             uart_tx_start_q <= 1'b0;
             uart_fifo_push_q <= 1'b0;
+
+            store_mmio_event = core_store_valid_q
+                && (!last_mmio_store_valid_q
+                    || core_store_addr_q != last_mmio_store_addr_q
+                    || core_store_word_q != last_mmio_store_word_q);
 
             if (!boot_banner_active_q && !boot_banner_sent_q) begin
                 boot_banner_active_q <= 1'b1;
                 boot_banner_idx_q <= 3'd0;
             end
 
-            if (core_store_valid_q && core_store_addr_q == LED_MMIO) begin
+            if (store_mmio_event && core_store_addr_q == LED_MMIO) begin
                 led_q <= core_store_word_q[7:0];
                 led_msg_state_q <= 4'd1;
                 led_msg_byte_q <= core_store_word_q[7:0];
@@ -280,7 +293,7 @@ module risky_genesys2_bram_top (
                         3'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; boot_banner_sent_q <= 1'b1; end
                         default: begin boot_banner_active_q <= 1'b0; boot_banner_sent_q <= 1'b1; end
                     endcase
-                end else if (core_store_valid_q && core_store_addr_q == UART_MMIO) begin
+                end else if (store_mmio_event && core_store_addr_q == UART_MMIO) begin
                     uart_fifo_push_q <= 1'b1;
                     uart_fifo_push_addr_q <= uart_wr_ptr_q;
                     uart_fifo_push_data_q <= core_store_word_q[7:0];
@@ -322,6 +335,10 @@ module risky_genesys2_bram_top (
                     endcase
                 end
             end
+
+            last_mmio_store_addr_q <= core_store_addr_q;
+            last_mmio_store_word_q <= core_store_word_q;
+            last_mmio_store_valid_q <= core_store_valid_q;
 
             if (!uart_fifo_empty && !uart_tx_busy) begin
                 uart_tx_data_q <= uart_fifo[uart_rd_ptr_q];
