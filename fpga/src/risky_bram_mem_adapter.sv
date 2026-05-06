@@ -50,9 +50,9 @@ module risky_bram_mem_adapter #(
             bram_mem[i] = 64'h0000_0013_0000_0013;
         end
 `include "risky_genesys2_bram_init.vh"
-        for (i = 0; i < RAM_WORDS; i = i + 1) begin
-            bram_mem[i] = bram[i];
-        end
+`define bram bram_mem
+`include "risky_genesys2_bram_init.vh"
+`undef bram
     end
 
     always @(posedge clk_i) begin
