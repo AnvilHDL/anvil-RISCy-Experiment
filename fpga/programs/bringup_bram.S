@@ -30,11 +30,17 @@ _start:
     li   t1, 0x10
     sb   t1, 0(t0)
 
+    # Stage 3: about to enter UART transmit loop.
+    li   t1, 0x1c
+    sb   t1, 0(t0)
+
     li   t3, UART_THR_MMIO
 
     # Print banner repeatedly from BRAM data memory. This is the correctness
     # gate for load-address timing before moving on to DDR/xv6.
 banner_loop:
+    li   t1, 0x1e
+    sb   t1, 0(t0)
     la   t4, msg_banner
 char_loop:
     lbu  t2, 0(t4)
