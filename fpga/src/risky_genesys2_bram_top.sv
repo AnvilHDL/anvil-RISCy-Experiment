@@ -19,7 +19,7 @@ module risky_genesys2_bram_top (
     output wire       fan_pwm
 );
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
-    localparam int RAM_WORDS = 1024;
+    localparam int RAM_WORDS = 4096;
     localparam int CORE_CLK_HZ = 25_000_000;
     localparam int UART_BAUD = 115200;
     localparam int UART_FIFO_DEPTH = 64;

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+: "${FPGA_BUILD_DIR:="$ROOT/build/fpga/vivado-ddr"}"
+: "${VIVADO_IMPL_TIMEOUT:=4h}"
+: "${VIVADO_JOBS:=4}"
+
+run_with_timeout() {
+  local limit="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground "$limit" "$@"
+  else
+    "$@"
+  fi
+}
+
+if ! command -v vivado >/dev/null 2>&1; then
+  echo "[vivado-ddr] Vivado not found; source settings64.sh first" >&2
+  exit 1
+fi
+
+"$ROOT/scripts/export_fpga_ddr_rtl.sh"
+mkdir -p "$FPGA_BUILD_DIR"
+
+run_with_timeout "$VIVADO_IMPL_TIMEOUT" vivado -mode batch -notrace \
+  -source "$ROOT/fpga/scripts/vivado_bitstream_ddr_genesys2.tcl" \
+  -tclargs "$ROOT" "$FPGA_BUILD_DIR" "$VIVADO_JOBS"
+
+echo "[vivado-ddr] bitstream: $FPGA_BUILD_DIR/risky_genesys2_ddr.bit"
