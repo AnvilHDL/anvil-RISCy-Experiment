@@ -340,7 +340,7 @@ module risky_genesys2_bram_top (
             last_mmio_store_word_q <= core_store_word_q;
             last_mmio_store_valid_q <= core_store_valid_q;
 
-            if (!uart_fifo_empty && !uart_tx_busy) begin
+            if (!uart_fifo_empty && !uart_tx_busy && !uart_fifo_push_q) begin
                 uart_tx_data_q <= uart_fifo[uart_rd_ptr_q];
                 uart_rd_ptr_q <= uart_rd_ptr_q + 6'd1;
                 uart_count_q <= uart_count_q - 7'd1;
