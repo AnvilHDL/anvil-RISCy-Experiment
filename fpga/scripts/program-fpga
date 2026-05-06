@@ -10,8 +10,12 @@ set -euo pipefail
 VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-/home/omar/Xilinx/2025.2.1/Vivado_Lab/settings64.sh}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# Look in repo root first (where SCP usually lands it), then build dir
-if [[ -f "$REPO_ROOT/risky_genesys2_bram.bit" ]]; then
+# Prefer the build artifact first so the default always tracks the current tree.
+# Fall back to a repo-root copy only if the build artifact is not present.
+if [[ -f "$REPO_ROOT/build/fpga/vivado-bram/risky_genesys2_bram.bit" ]]; then
+    DEFAULT_BIT="$REPO_ROOT/build/fpga/vivado-bram/risky_genesys2_bram.bit"
+elif [[ -f "$REPO_ROOT/risky_genesys2_bram.bit" ]]; then
+    echo "[program-fpga] WARNING: using repo-root bitstream fallback; prefer build/fpga/vivado-bram/risky_genesys2_bram.bit" >&2
     DEFAULT_BIT="$REPO_ROOT/risky_genesys2_bram.bit"
 else
     DEFAULT_BIT="$REPO_ROOT/build/fpga/vivado-bram/risky_genesys2_bram.bit"
