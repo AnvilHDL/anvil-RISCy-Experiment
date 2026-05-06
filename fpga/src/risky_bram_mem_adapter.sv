@@ -74,51 +74,32 @@ module risky_bram_mem_adapter #(
     wire                 sto_in_ram   = (sto_offset >> 3) < RAM_WORDS_64;
 
     // =========================================================================
-    // Read data
+    // Read data (Asynchronous for Anvil 0-cycle requirement)
     //
-    // SDP BRAM pattern (Xilinx UG901): posedge, unconditional read, gated
-    // write.  The mux-control flag (mem_in_ram_q) and the MMIO word are
-    // latched on the SAME posedge as the BRAM read so the output mux is
-    // always consistent when the core samples mem_rsp_data_o one cycle later.
-    //
-    // BUG HISTORY: Codex used negedge (non-standard, breaks RAMB inference)
-    // and a live combinatorial mem_in_ram in the mux.  Because core_mem_addr
-    // has already advanced to the next instruction by the time the core
-    // samples the response, the live mem_in_ram was 0 for any non-memory
-    // instruction following a BRAM load, causing mmio_rdata_i (=0) to be
-    // returned instead of mem_word_q — producing ld_fail.
+    // The Anvil pipeline requires 0-cycle combinatorial memory reads because 
+    // it was built under the assumption that the C++ testbench pre-populates
+    // memory registers before the tick. To satisfy this on FPGA without 
+    // stalling, we must implement the BRAM read as an asynchronous LUTRAM.
     // =========================================================================
-    reg [63:0] if_word_q   = 64'd0;
-    reg [63:0] mem_word_q  = 64'd0;
-    reg        mem_in_ram_q = 1'b0;
-    reg [63:0] mmio_word_q = 64'd0;
+    wire [63:0] if_word   = bram[if_word_idx];
+    wire [63:0] mem_word  = bram_mem[mem_word_idx];
 
     always @(posedge clk_i) begin
-        // IF BRAM: unconditional read + gated write (SDP)
-        if_word_q <= bram[if_word_idx];
-        if (sto_in_ram && mem_store_valid_i)
+        if (sto_in_ram && mem_store_valid_i) begin
             bram[sto_word_idx] <= mem_store_word_i;
-    end
-
-    always @(posedge clk_i) begin
-        // MEM BRAM: unconditional read + gated write (SDP)
-        mem_word_q <= bram_mem[mem_word_idx];
-        if (sto_in_ram && mem_store_valid_i)
             bram_mem[sto_word_idx] <= mem_store_word_i;
-
-        // Latch BRAM/MMIO select and MMIO data together with the BRAM word
-        mem_in_ram_q <= mem_in_ram && mem_req_valid_i && !mem_req_write_i;
-        if (mem_req_valid_i && !mem_req_write_i && !mem_in_ram)
-            mmio_word_q <= mmio_rdata_i;
+        end
     end
 
     // =========================================================================
-    // Output mux — registered signals only, stable when core samples
+    // Output mux — combinatorial to match Anvil's 0-cycle memory assumption
     // =========================================================================
     assign if_rsp_data_o = (if_req_valid_i && if_in_ram)
-        ? (if_req_addr_i[2] ? if_word_q[63:32] : if_word_q[31:0])
-        : 32'h0000_0013;
+        ? (if_req_addr_i[2] ? if_word[63:32] : if_word[31:0])
+        : 32'h0000_0013; // nop
 
-    assign mem_rsp_data_o = mem_in_ram_q ? mem_word_q : mmio_word_q;
+    assign mem_rsp_data_o = (mem_req_valid_i && mem_in_ram)
+        ? mem_word
+        : mmio_rdata_i;
 
 endmodule
