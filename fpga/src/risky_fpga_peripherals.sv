@@ -7,8 +7,6 @@ module risky_fpga_peripherals #(
     input  wire        rst_ni,
     input  wire        rx_i,
     input  wire [63:0] mem_addr_i,
-    input  wire        mem_read_i,
-    input  wire        mem_write_i,
     input  wire        mmio_read_valid_i,
     input  wire [63:0] mmio_read_addr_i,
     input  wire        store_valid_i,
@@ -99,7 +97,6 @@ module risky_fpga_peripherals #(
 
     wire [63:0] plic_rdata;
     wire [63:0] plic_ext_mip;
-    (* keep = "true" *) wire _unused_mem_rw_sink = mem_read_i | mem_write_i;
 
     function automatic [7:0] mmio_store_byte;
         input [63:0] addr;

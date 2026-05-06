@@ -155,13 +155,18 @@ module risky_genesys2_bram_top (
     wire [7:0] led_state;
     wire [31:0] adapter_imem_rdata;
     wire [63:0] adapter_mem_rdata;
-    (* keep = "true" *) wire _unused_req_sink = core_if_req_valid |
-        |core_if_req_addr |
-        core_mem_req_valid |
-        |core_mem_req_addr |
-        core_mem_req_write |
-        |core_mem_req_wdata |
-        |core_mem_req_width;
+
+    // Fold all future-use / observation-only outputs into the heartbeat counter so
+    // Vivado preserves their fan-in cones without needing (* keep *) on dead nets.
+    // heartbeat_q[22] drives led[1] (observable), so Vivado will never prune it.
+    wire [31:0] _obs_fold =
+        {core_if_req_valid,  core_mem_req_valid,  core_mem_req_write,
+         core_sim_exit_valid, core_sv39_flush,
+         core_priv,                                       // [1:0] -> 2 bits
+         |core_if_req_addr,  |core_mem_req_addr,
+         |core_mem_req_wdata, |core_mem_req_width,
+         |core_satp,          |core_sim_exit_code,
+         19'd0};
 
     always @(posedge clk_core) begin
         if (!rst_ni) begin
@@ -179,7 +184,7 @@ module risky_genesys2_bram_top (
         if (!rst_ni) begin
             heartbeat_q <= 32'd0;
         end else begin
-            heartbeat_q <= heartbeat_q + 32'd1;
+            heartbeat_q <= heartbeat_q + 32'd1 + {31'd0, ^_obs_fold};
         end
     end
 
@@ -254,8 +259,6 @@ module risky_genesys2_bram_top (
         .rst_ni        (rst_ni),
         .rx_i          (rx),
         .mem_addr_i    (core_mem_addr),
-        .mem_read_i    (core_mem_read),
-        .mem_write_i   (core_mem_write),
         .mmio_read_valid_i(core_mmio_read_valid),
         .mmio_read_addr_i (core_mmio_read_addr),
         .store_valid_i (core_store_valid_q && ((core_store_addr_q[31:28] == 4'h1) ||
