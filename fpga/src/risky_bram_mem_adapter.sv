@@ -82,14 +82,14 @@ module risky_bram_mem_adapter #(
     reg [63:0] if_word_q  = 64'd0;
     reg [63:0] mem_word_q = 64'd0;
 
-    always @(posedge clk_i) begin
+    always @(negedge clk_i) begin
         if_word_q <= bram[if_word_idx];
         // Write port A — committed store
         if (sto_in_ram && mem_store_valid_i)
             bram[sto_word_idx] <= mem_store_word_i;
     end
 
-    always @(posedge clk_i) begin
+    always @(negedge clk_i) begin
         mem_word_q <= bram_mem[mem_word_idx];
         // Write port A — committed store (same data as instance 0)
         if (sto_in_ram && mem_store_valid_i)
