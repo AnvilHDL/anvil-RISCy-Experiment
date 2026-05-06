@@ -15,14 +15,15 @@ module risky_genesys2_bram_top (
     output wire [7:0] led,
     output wire       fan_pwm
 );
+    localparam integer CORE_CLK_DIVIDE = 8;
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
     localparam logic [63:0] LED_MMIO = 64'h0000_0000_1000_0000;
     localparam logic [63:0] UART_MMIO = 64'h0000_0000_1000_0008;
     localparam int RAM_WORDS = 1024;
     localparam logic [63:0] RAM_WORDS_64 = 64'd1024;
-    localparam int UART_CLK_HZ = 200_000_000;
+    localparam int CORE_CLK_HZ = 25_000_000;
     localparam int UART_BAUD = 115200;
-    localparam int UART_CLKS_PER_BIT = UART_CLK_HZ / UART_BAUD;
+    localparam int UART_CLKS_PER_BIT = CORE_CLK_HZ / UART_BAUD;
     localparam int UART_FIFO_DEPTH = 64;
     localparam logic [6:0] UART_FIFO_DEPTH_7 = 7'd64;
 
@@ -34,9 +35,11 @@ module risky_genesys2_bram_top (
     endfunction
 
     wire clk200;
+    wire clk_core;
 
 `ifdef VERILATOR
     assign clk200 = clk200_p;
+    assign clk_core = clk200_p;
 `else
     IBUFDS #(
         .DIFF_TERM("FALSE"),
@@ -47,10 +50,19 @@ module risky_genesys2_bram_top (
         .IB(clk200_n),
         .O (clk200)
     );
+
+    BUFGCE_DIV #(
+        .BUFGCE_DIVIDE(CORE_CLK_DIVIDE)
+    ) i_coreclk_bufgdiv (
+        .I   (clk200),
+        .CE  (1'b1),
+        .CLR (1'b0),
+        .O   (clk_core)
+    );
 `endif
 
     reg [3:0] reset_sync = 4'h0;
-    always @(posedge clk200 or negedge cpu_resetn) begin
+    always @(posedge clk_core or negedge cpu_resetn) begin
         if (!cpu_resetn) begin
             reset_sync <= 4'h0;
         end else begin
@@ -142,7 +154,7 @@ module risky_genesys2_bram_top (
 
     // Keep the RAM in a synchronous read/write template so Vivado infers BRAM
     // instead of dissolving the array into flip-flops.
-    always @(posedge clk200) begin
+    always @(posedge clk_core) begin
         fetch_word_q <= pc_in_ram ? bram[pc_word_idx] : 64'h0000_0013_0000_0013;
         mem_word_q <= mem_in_ram ? bram[mem_word_idx] : 64'd0;
         if (core_store_valid_safe && store_in_ram) begin
@@ -153,7 +165,7 @@ module risky_genesys2_bram_top (
         end
     end
 
-    always @(posedge clk200 or negedge rst_ni) begin
+    always @(posedge clk_core or negedge rst_ni) begin
         if (!rst_ni) begin
             led_q <= 8'h00;
             heartbeat_q <= 32'd0;
@@ -258,7 +270,7 @@ module risky_genesys2_bram_top (
     end
 
     pipeline_core_bram_if i_core (
-        .clk_i              (clk200),
+        .clk_i              (clk_core),
         .rst_ni             (rst_ni),
         .imem_rdata_i       (core_imem_rdata),
         .mem_rdata_i        (core_mem_rdata),
@@ -274,7 +286,7 @@ module risky_genesys2_bram_top (
     risky_uart_tx #(
         .CLKS_PER_BIT(UART_CLKS_PER_BIT)
     ) i_uart_tx (
-        .clk_i      (clk200),
+        .clk_i      (clk_core),
         .rst_ni     (rst_ni),
         .start_i    (uart_tx_start_q),
         .data_i     (uart_tx_data_q),
@@ -283,7 +295,7 @@ module risky_genesys2_bram_top (
     );
 
     assign led[0] = rst_ni;
-    assign led[1] = heartbeat_q[25];
+    assign led[1] = heartbeat_q[22];
     assign led[7:2] = led_q[5:0];
 
     assign fan_pwm = 1'b1;
