@@ -233,10 +233,10 @@ module risky_genesys2_bram_top (
         .RAM_WORDS(RAM_WORDS)
     ) i_bram_mem_adapter (
         .clk_i           (clk_core),
-        .if_req_valid_i  (rst_ni),
+        .if_req_valid_i  (core_if_req_valid),
         .if_req_addr_i   (core_pc),
         .if_rsp_data_o   (adapter_imem_rdata),
-        .mem_req_valid_i (core_mem_read || core_mem_write),
+        .mem_req_valid_i (core_mem_req_valid),
         .mem_req_addr_i  (core_mem_addr),
         .mem_req_write_i (core_mem_write),
         .mem_store_valid_i(core_store_valid_q),
