@@ -9,7 +9,13 @@ set -euo pipefail
 
 VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-/home/omar/Xilinx/2025.2.1/Vivado_Lab/settings64.sh}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEFAULT_BIT="$SCRIPT_DIR/../build/fpga/vivado-bram/risky_genesys2_bram.bit"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Look in repo root first (where SCP usually lands it), then build dir
+if [[ -f "$REPO_ROOT/risky_genesys2_bram.bit" ]]; then
+    DEFAULT_BIT="$REPO_ROOT/risky_genesys2_bram.bit"
+else
+    DEFAULT_BIT="$REPO_ROOT/build/fpga/vivado-bram/risky_genesys2_bram.bit"
+fi
 BITSTREAM="${1:-$DEFAULT_BIT}"
 
 if [[ ! -f "$BITSTREAM" ]]; then
