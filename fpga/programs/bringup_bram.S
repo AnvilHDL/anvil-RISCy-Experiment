@@ -18,7 +18,7 @@ _start:
     la   t4, probe_word
     ld   t2, 0(t4)
     li   t1, 'R'
-    bne  t2, t1, load_fail
+    bne  t2, t1, ld_fail
     li   t1, 0x08
     sb   t1, 0(t0)
 
@@ -26,7 +26,7 @@ _start:
     la   t4, msg_banner
     lbu  t2, 0(t4)
     li   t1, 'R'
-    bne  t2, t1, load_fail
+    bne  t2, t1, lbu_fail
     li   t1, 0x10
     sb   t1, 0(t0)
 
@@ -52,10 +52,16 @@ banner_wait:
 
     j    banner_loop
 
-load_fail:
-    li   t1, 0x1a
+ld_fail:
+    li   t1, 0x0a
     sb   t1, 0(t0)
 fail_loop:
+    j    fail_loop
+
+lbu_fail:
+    li   t1, 0x12
+    sb   t1, 0(t0)
+lbu_fail_loop:
     j    fail_loop
 
 char_delay:
