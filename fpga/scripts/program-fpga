@@ -8,7 +8,6 @@
 set -euo pipefail
 
 VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-/home/omar/Xilinx/2025.2.1/Vivado_Lab/settings64.sh}"
-USB_WAIT_SECS="${USB_WAIT_SECS:-30}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Prefer the build artifact first so the default always tracks the current tree.
@@ -45,18 +44,6 @@ vivado_lab -mode batch -notrace \
     -source "$SCRIPT_DIR/program_local_genesys2.tcl" \
     -tclargs "$BITSTREAM"
 
-echo "[program-fpga] waiting for Digilent USB serial to re-enumerate"
-deadline=$((SECONDS + USB_WAIT_SECS))
-while (( SECONDS < deadline )); do
-    if ls /dev/serial/by-id/usb-Digilent_Digilent_Adept_USB_Device_* >/dev/null 2>&1; then
-        echo "[program-fpga] Digilent USB serial is back"
-        break
-    fi
-    sleep 1
-done
-
-if ! ls /dev/serial/by-id/usb-Digilent_Digilent_Adept_USB_Device_* >/dev/null 2>&1; then
-    echo "[program-fpga] WARNING: Digilent USB serial did not reappear within ${USB_WAIT_SECS}s" >&2
-fi
+echo "[program-fpga] note: the Digilent USB serial may disconnect and re-enumerate after programming"
 
 echo "[program-fpga] done — board is running $(basename "$BITSTREAM")"
