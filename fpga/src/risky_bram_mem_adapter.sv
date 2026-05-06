@@ -43,20 +43,22 @@ module risky_bram_mem_adapter #(
     //   bram_if[]  : port B used for instruction-fetch reads
     //   bram_mem[] : port B used for data-memory reads
     // -------------------------------------------------------------------------
-    (* ram_style = "block" *) reg [63:0] bram_if  [0:RAM_WORDS-1];
+    (* ram_style = "block" *) reg [63:0] bram     [0:RAM_WORDS-1];
     (* ram_style = "block" *) reg [63:0] bram_mem [0:RAM_WORDS-1];
 
     // ---- Initialise both arrays from the generated init header ----
     integer _i;
     initial begin
         for (_i = 0; _i < RAM_WORDS; _i = _i + 1) begin
-            bram_if [_i] = 64'h0000_0013_0000_0013;
+            bram    [_i] = 64'h0000_0013_0000_0013;
             bram_mem[_i] = 64'h0000_0013_0000_0013;
         end
-`include "risky_genesys2_bram_init.vh"          // writes bram_if[N] = ...
+`ifndef __VERILATOR__
+`include "risky_genesys2_bram_init.vh"          // writes bram[N] = ...
 `define bram bram_mem
 `include "risky_genesys2_bram_init.vh"          // writes bram_mem[N] = ...
 `undef bram
+`endif
     end
 
     // ---- Address decode (combinatorial) ----
@@ -102,9 +104,9 @@ module risky_bram_mem_adapter #(
     always @(posedge clk_i) begin
         // Write port A — committed store
         if (sto_in_ram && mem_store_valid_i)
-            bram_if[sto_word_idx] <= mem_store_word_i;
+            bram[sto_word_idx] <= mem_store_word_i;
         // Read port B — always read (no CE condition)
-        if_word_q <= bram_if[if_word_idx];
+        if_word_q <= bram[if_word_idx];
     end
 
     // =========================================================================
