@@ -25,6 +25,48 @@ def choose_tools():
     raise SystemExit("[fpga-bram-init] need riscv64-unknown-elf-gcc+objcopy or clang+llvm-objcopy")
 
 
+def choose_march(cc_kind, cc):
+    candidates = ["rv64im_zicsr", "rv64im"]
+    test_src = ".section .text._start\n.globl _start\n_start:\n  ret\n"
+
+    with tempfile.TemporaryDirectory(prefix="fpga-bram-isa-") as td:
+        td = Path(td)
+        src = td / "probe.S"
+        obj = td / "probe.o"
+        src.write_text(test_src, encoding="ascii")
+
+        for march in candidates:
+            if cc_kind == "gcc":
+                cmd = [
+                    cc,
+                    f"-march={march}",
+                    "-mabi=lp64",
+                    "-nostdlib",
+                    "-ffreestanding",
+                    "-c",
+                    str(src),
+                    "-o",
+                    str(obj),
+                ]
+            else:
+                cmd = [
+                    cc,
+                    "--target=riscv64-unknown-elf",
+                    f"-march={march}",
+                    "-mabi=lp64",
+                    "-nostdlib",
+                    "-ffreestanding",
+                    "-c",
+                    str(src),
+                    "-o",
+                    str(obj),
+                ]
+            if subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                return march
+
+    raise SystemExit("[fpga-bram-init] could not find a supported rv64im toolchain ISA")
+
+
 def main():
     if len(sys.argv) != 4:
         raise SystemExit("usage: gen_fpga_bram_init.py <src.S> <link.ld> <out.vh>")
@@ -35,6 +77,7 @@ def main():
     root = src.parents[1]
 
     kind, cc, objcopy = choose_tools()
+    march = choose_march(kind, cc)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="fpga-bram-init-") as td:
@@ -43,7 +86,7 @@ def main():
         binfile = td / "bringup.bin"
 
         common = [
-            "-march=rv64im_zicsr",
+            f"-march={march}",
             "-mabi=lp64",
             "-mcmodel=medany",
             "-nostdlib",
