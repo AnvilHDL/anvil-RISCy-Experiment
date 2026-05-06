@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# program-fpga — Program any bitstream onto the local Genesys 2 board
+#
+# Usage:
+#   ./program-fpga                          # programs BRAM bringup bitstream
+#   ./program-fpga path/to/design.bit       # programs any bitstream
+#
+set -euo pipefail
+
+VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-/home/omar/Xilinx/2025.2.1/Vivado_Lab/settings64.sh}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_BIT="$SCRIPT_DIR/../build/fpga/vivado-bram/risky_genesys2_bram.bit"
+BITSTREAM="${1:-$DEFAULT_BIT}"
+
+if [[ ! -f "$BITSTREAM" ]]; then
+    echo "ERROR: bitstream not found: $BITSTREAM" >&2
+    exit 1
+fi
+
+# Source Vivado Lab if vivado_lab not already in PATH
+if ! command -v vivado_lab &>/dev/null; then
+    if [[ ! -f "$VIVADO_LAB_SETTINGS" ]]; then
+        echo "ERROR: Vivado Lab settings not found at $VIVADO_LAB_SETTINGS" >&2
+        echo "       Set VIVADO_LAB_SETTINGS env var to the correct path." >&2
+        exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "$VIVADO_LAB_SETTINGS"
+fi
+
+echo "[program-fpga] programming: $BITSTREAM"
+
+vivado_lab -mode batch -notrace \
+    -source "$SCRIPT_DIR/program_local_genesys2.tcl" \
+    -tclargs "$BITSTREAM"
+
+echo "[program-fpga] done — board is running $(basename "$BITSTREAM")"
