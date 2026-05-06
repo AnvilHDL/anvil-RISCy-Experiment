@@ -142,6 +142,9 @@ module risky_genesys2_bram_top (
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
     reg       core_store_valid_q = 1'b0;
+    (* DONT_TOUCH = "true" *) reg [9:0] bram_store_word_idx_q = 10'd0;
+    (* DONT_TOUCH = "true" *) reg [63:0] bram_store_word_q = 64'd0;
+    (* DONT_TOUCH = "true" *) reg       bram_store_we_q = 1'b0;
 
     wire uart_fifo_empty = uart_count_q == 7'd0;
     wire uart_fifo_full = uart_count_q == UART_FIFO_DEPTH_7;
@@ -180,6 +183,9 @@ module risky_genesys2_bram_top (
             core_store_addr_q <= RAM_BASE;
             core_store_word_q <= 64'd0;
             core_store_valid_q <= 1'b0;
+            bram_store_word_idx_q <= 10'd0;
+            bram_store_word_q <= 64'd0;
+            bram_store_we_q <= 1'b0;
         end else begin
             logic [63:0] pc_offset;
             logic [63:0] mem_offset;
@@ -201,6 +207,9 @@ module risky_genesys2_bram_top (
             core_store_addr_q <= core_store_addr;
             core_store_word_q <= core_store_word;
             core_store_valid_q <= core_store_valid;
+            bram_store_word_idx_q <= store_word_idx_q;
+            bram_store_word_q <= core_store_word_q;
+            bram_store_we_q <= core_store_valid_q && store_in_ram_q;
         end
     end
 
@@ -209,8 +218,8 @@ module risky_genesys2_bram_top (
     always @(posedge clk_core) begin
         fetch_word_q <= pc_in_ram_q ? bram[pc_word_idx_q] : 64'h0000_0013_0000_0013;
         mem_word_q <= mem_in_ram_q ? bram[mem_word_idx_q] : 64'd0;
-        if (core_store_valid_q && store_in_ram_q) begin
-            bram[store_word_idx_q] <= core_store_word_q;
+        if (bram_store_we_q) begin
+            bram[bram_store_word_idx_q] <= bram_store_word_q;
         end
         if (uart_fifo_push_q) begin
             uart_fifo[uart_fifo_push_addr_q] <= uart_fifo_push_data_q;
