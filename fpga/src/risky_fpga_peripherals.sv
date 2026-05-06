@@ -19,6 +19,7 @@ module risky_fpga_peripherals #(
     output wire [63:0] ext_mip_o,
     output wire        tx_o,
     output wire [7:0]  led_o,
+    output wire [2:0]  uart_debug_o,
     output wire        fan_pwm_o
 );
     localparam logic [63:0] LED_MMIO       = 64'h0000_0000_1000_0008;
@@ -63,6 +64,11 @@ module risky_fpga_peripherals #(
     reg [63:0] last_store_addr_q = 64'd0;
     reg [63:0] last_store_data_q = 64'd0;
     reg        last_store_valid_q = 1'b0;
+    reg        uart_mmio_store_seen_q = 1'b0;
+    reg        uart_thr_store_seen_q = 1'b0;
+    reg        uart_tx_start_seen_q = 1'b0;
+    reg        uart_tx_activity_seen_q = 1'b0;
+    reg        tx_o_q = 1'b1;
 
     wire uart_tx_busy;
     wire tx_fifo_empty = (tx_count_q == {UART_COUNT_W{1'b0}});
@@ -172,6 +178,11 @@ module risky_fpga_peripherals #(
             last_store_addr_q <= 64'd0;
             last_store_data_q <= 64'd0;
             last_store_valid_q <= 1'b0;
+            uart_mmio_store_seen_q <= 1'b0;
+            uart_thr_store_seen_q <= 1'b0;
+            uart_tx_start_seen_q <= 1'b0;
+            uart_tx_activity_seen_q <= 1'b0;
+            tx_o_q <= 1'b1;
         end else begin
             fan_ctr_q <= fan_ctr_q + 8'd1;
             tx_start_q <= 1'b0;
@@ -183,11 +194,13 @@ module risky_fpga_peripherals #(
             end
 
             if (store_event && (store_addr_i & 64'hffff_ffff_ffff_fff0) == UART_BASE) begin
+                uart_mmio_store_seen_q <= 1'b1;
                 case (store_reg_off)
                     4'h0: begin
                         if (uart_dlab) begin
                             uart_dll_q <= store_byte;
                         end else if (!tx_fifo_full) begin
+                            uart_thr_store_seen_q <= 1'b1;
                             tx_push_q <= 1'b1;
                             tx_push_addr_q <= tx_wr_ptr_q;
                             tx_push_data_q <= store_byte;
@@ -246,11 +259,17 @@ module risky_fpga_peripherals #(
                 tx_rd_ptr_q <= tx_rd_ptr_q + {{(UART_PTR_W-1){1'b0}}, 1'b1};
                 tx_count_q <= tx_count_q - {{(UART_COUNT_W-1){1'b0}}, 1'b1};
                 tx_start_q <= 1'b1;
+                uart_tx_start_seen_q <= 1'b1;
             end
 
             if (tx_push_q) begin
                 tx_fifo[tx_push_addr_q] <= tx_push_data_q;
             end
+
+            if (tx_o != tx_o_q) begin
+                uart_tx_activity_seen_q <= 1'b1;
+            end
+            tx_o_q <= tx_o;
 
             last_store_addr_q <= store_addr_i;
             last_store_data_q <= store_data_i;
@@ -297,5 +316,7 @@ module risky_fpga_peripherals #(
     assign mem_rdata_o = mmio_rdata_r;
     assign ext_mip_o = plic_ext_mip;
     assign led_o = led_q;
+    assign uart_debug_o = {uart_tx_activity_seen_q, uart_tx_start_seen_q,
+        uart_thr_store_seen_q || uart_mmio_store_seen_q};
     assign fan_pwm_o = fan_ctr_q != 8'd0;
 endmodule

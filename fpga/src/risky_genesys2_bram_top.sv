@@ -153,6 +153,7 @@ module risky_genesys2_bram_top (
 
     wire [63:0] mmio_rdata;
     wire [7:0] led_state;
+    wire [2:0] uart_debug;
     wire [31:0] adapter_imem_rdata;
     wire [63:0] adapter_mem_rdata;
 
@@ -272,6 +273,7 @@ module risky_genesys2_bram_top (
         .ext_mip_o     (core_ext_mip),
         .tx_o          (tx),
         .led_o         (led_state),
+        .uart_debug_o   (uart_debug),
         .fan_pwm_o     (fan_pwm)
     );
 
@@ -286,5 +288,10 @@ module risky_genesys2_bram_top (
 
     assign led[0] = rst_ni;
     assign led[1] = heartbeat_q[22];
-    assign led[7:2] = led_state[5:0];
+    assign led[2] = uart_debug[0]; // THR store accepted by UART peripheral.
+    assign led[3] = led_state[1];
+    assign led[4] = uart_debug[1]; // UART TX engine started at least once.
+    assign led[5] = led_state[3];
+    assign led[6] = led_state[4];
+    assign led[7] = uart_debug[2]; // Physical tx_o toggled at least once.
 endmodule
