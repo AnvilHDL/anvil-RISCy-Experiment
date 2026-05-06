@@ -86,7 +86,7 @@ module risky_genesys2_bram_top (
 
     reg [3:0] reset_sync = 4'h0;
     wire core_resetn = cpu_resetn && core_clk_locked;
-    always @(posedge clk_core or negedge core_resetn) begin
+    always @(posedge clk_core) begin
         if (!core_resetn) begin
             reset_sync <= 4'h0;
         end else begin
@@ -132,30 +132,22 @@ module risky_genesys2_bram_top (
     reg [4:0] exit_msg_state_q = 5'd0;
     reg [63:0] exit_code_latched_q = 64'd0;
 
-    wire [63:0] core_pc_safe = rst_ni ? core_pc : RAM_BASE;
-    wire [63:0] core_mem_addr_safe = rst_ni ? core_mem_addr : RAM_BASE;
-    wire [63:0] core_store_addr_safe = rst_ni ? core_store_addr : RAM_BASE;
-    wire [63:0] core_store_word_safe = rst_ni ? core_store_word : 64'd0;
-    wire        core_store_valid_safe = rst_ni ? core_store_valid : 1'b0;
-
-    wire [63:0] pc_offset = core_pc_safe - RAM_BASE;
-    wire [63:0] mem_offset = core_mem_addr_safe - RAM_BASE;
-    wire [63:0] store_offset = core_store_addr_safe - RAM_BASE;
-
-    wire pc_in_ram = (pc_offset >> 3) < RAM_WORDS_64;
-    wire mem_in_ram = (mem_offset >> 3) < RAM_WORDS_64;
-    wire store_in_ram = (store_offset >> 3) < RAM_WORDS_64;
-
-    wire [9:0] pc_word_idx = pc_offset[12:3];
-    wire [2:0] pc_byte_idx = core_pc_safe[2:0];
-    wire [9:0] mem_word_idx = mem_offset[12:3];
-    wire [9:0] store_word_idx = store_offset[12:3];
+    reg [9:0] pc_word_idx_q = 10'd0;
+    reg [2:0] pc_byte_idx_q = 3'd0;
+    reg       pc_in_ram_q = 1'b0;
+    reg [9:0] mem_word_idx_q = 10'd0;
+    reg       mem_in_ram_q = 1'b0;
+    reg [9:0] store_word_idx_q = 10'd0;
+    reg       store_in_ram_q = 1'b0;
+    reg [63:0] core_store_addr_q = RAM_BASE;
+    reg [63:0] core_store_word_q = 64'd0;
+    reg       core_store_valid_q = 1'b0;
 
     wire uart_fifo_empty = uart_count_q == 7'd0;
     wire uart_fifo_full = uart_count_q == UART_FIFO_DEPTH_7;
     wire uart_tx_busy;
 
-    assign core_imem_rdata = pc_byte_idx[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
+    assign core_imem_rdata = pc_byte_idx_q[2] ? fetch_word_q[63:32] : fetch_word_q[31:0];
     assign core_mem_rdata = mem_word_q;
 
     integer i;
@@ -176,13 +168,49 @@ module risky_genesys2_bram_top (
         bram[2] = 64'h0000_006f_0072_a423;
     end
 
+    always @(posedge clk_core) begin
+        if (!rst_ni) begin
+            pc_word_idx_q <= 10'd0;
+            pc_byte_idx_q <= 3'd0;
+            pc_in_ram_q <= 1'b1;
+            mem_word_idx_q <= 10'd0;
+            mem_in_ram_q <= 1'b1;
+            store_word_idx_q <= 10'd0;
+            store_in_ram_q <= 1'b0;
+            core_store_addr_q <= RAM_BASE;
+            core_store_word_q <= 64'd0;
+            core_store_valid_q <= 1'b0;
+        end else begin
+            logic [63:0] pc_offset;
+            logic [63:0] mem_offset;
+            logic [63:0] store_offset;
+
+            pc_offset = core_pc - RAM_BASE;
+            mem_offset = core_mem_addr - RAM_BASE;
+            store_offset = core_store_addr - RAM_BASE;
+
+            pc_word_idx_q <= pc_offset[12:3];
+            pc_byte_idx_q <= core_pc[2:0];
+            pc_in_ram_q <= (pc_offset >> 3) < RAM_WORDS_64;
+
+            mem_word_idx_q <= mem_offset[12:3];
+            mem_in_ram_q <= (mem_offset >> 3) < RAM_WORDS_64;
+
+            store_word_idx_q <= store_offset[12:3];
+            store_in_ram_q <= (store_offset >> 3) < RAM_WORDS_64;
+            core_store_addr_q <= core_store_addr;
+            core_store_word_q <= core_store_word;
+            core_store_valid_q <= core_store_valid;
+        end
+    end
+
     // Keep the RAM in a synchronous read/write template so Vivado infers BRAM
     // instead of dissolving the array into flip-flops.
     always @(posedge clk_core) begin
-        fetch_word_q <= pc_in_ram ? bram[pc_word_idx] : 64'h0000_0013_0000_0013;
-        mem_word_q <= mem_in_ram ? bram[mem_word_idx] : 64'd0;
-        if (core_store_valid_safe && store_in_ram) begin
-            bram[store_word_idx] <= core_store_word_safe;
+        fetch_word_q <= pc_in_ram_q ? bram[pc_word_idx_q] : 64'h0000_0013_0000_0013;
+        mem_word_q <= mem_in_ram_q ? bram[mem_word_idx_q] : 64'd0;
+        if (core_store_valid_q && store_in_ram_q) begin
+            bram[store_word_idx_q] <= core_store_word_q;
         end
         if (uart_fifo_push_q) begin
             uart_fifo[uart_fifo_push_addr_q] <= uart_fifo_push_data_q;
@@ -218,10 +246,10 @@ module risky_genesys2_bram_top (
                 boot_banner_idx_q <= 3'd0;
             end
 
-            if (core_store_valid_safe && core_store_addr_safe == LED_MMIO) begin
-                led_q <= core_store_word_safe[7:0];
+            if (core_store_valid_q && core_store_addr_q == LED_MMIO) begin
+                led_q <= core_store_word_q[7:0];
                 led_msg_state_q <= 4'd1;
-                led_msg_byte_q <= core_store_word_safe[7:0];
+                led_msg_byte_q <= core_store_word_q[7:0];
             end
 
             if (core_sim_exit_valid && !sim_exit_seen_q) begin
@@ -241,10 +269,10 @@ module risky_genesys2_bram_top (
                         3'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; end
                         default: boot_banner_active_q <= 1'b0;
                     endcase
-                end else if (core_store_valid_safe && core_store_addr_safe == UART_MMIO) begin
+                end else if (core_store_valid_q && core_store_addr_q == UART_MMIO) begin
                     uart_fifo_push_q <= 1'b1;
                     uart_fifo_push_addr_q <= uart_wr_ptr_q;
-                    uart_fifo_push_data_q <= core_store_word_safe[7:0];
+                    uart_fifo_push_data_q <= core_store_word_q[7:0];
                     uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1;
                     uart_count_q <= uart_count_q + 7'd1;
                 end else if (led_msg_state_q != 4'd0) begin
