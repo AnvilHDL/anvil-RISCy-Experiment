@@ -14,14 +14,14 @@ module risky_genesys2_top (
     output wire [7:0] led,
     output wire       fan_pwm
 );
-    localparam integer CORE_CLK_DIVIDE = 8;
-
     wire clk200;
     wire clk_core;
+    wire core_clk_locked;
 
 `ifdef VERILATOR
     assign clk200 = clk200_p;
     assign clk_core = clk200_p;
+    assign core_clk_locked = 1'b1;
 `else
     IBUFDS #(
         .DIFF_TERM("FALSE"),
@@ -33,19 +33,42 @@ module risky_genesys2_top (
         .O (clk200)
     );
 
-    BUFGCE_DIV #(
-        .BUFGCE_DIVIDE(CORE_CLK_DIVIDE)
-    ) i_coreclk_bufgdiv (
-        .I   (clk200),
-        .CE  (1'b1),
-        .CLR (1'b0),
-        .O   (clk_core)
+    wire clkfb_mmcm;
+    wire clkfb_bufg;
+    wire clk_core_mmcm;
+
+    MMCME2_BASE #(
+        .BANDWIDTH("OPTIMIZED"),
+        .CLKIN1_PERIOD(5.000),
+        .CLKFBOUT_MULT_F(5.000),
+        .DIVCLK_DIVIDE(1),
+        .CLKOUT0_DIVIDE_F(40.000),
+        .CLKOUT0_DUTY_CYCLE(0.500)
+    ) i_coreclk_mmcm (
+        .CLKIN1   (clk200),
+        .CLKFBIN  (clkfb_bufg),
+        .RST      (!cpu_resetn),
+        .PWRDWN   (1'b0),
+        .CLKFBOUT (clkfb_mmcm),
+        .CLKOUT0  (clk_core_mmcm),
+        .LOCKED   (core_clk_locked)
+    );
+
+    BUFG i_coreclk_fb_bufg (
+        .I (clkfb_mmcm),
+        .O (clkfb_bufg)
+    );
+
+    BUFG i_coreclk_bufg (
+        .I (clk_core_mmcm),
+        .O (clk_core)
     );
 `endif
 
     reg [3:0] reset_sync = 4'h0;
-    always @(posedge clk_core or negedge cpu_resetn) begin
-        if (!cpu_resetn) begin
+    wire core_resetn = cpu_resetn && core_clk_locked;
+    always @(posedge clk_core or negedge core_resetn) begin
+        if (!core_resetn) begin
             reset_sync <= 4'h0;
         end else begin
             reset_sync <= {reset_sync[2:0], 1'b1};

@@ -10,7 +10,7 @@
 set_property -dict { PACKAGE_PIN AD12 IOSTANDARD LVDS } [get_ports { clk200_p }]
 set_property -dict { PACKAGE_PIN AD11 IOSTANDARD LVDS } [get_ports { clk200_n }]
 create_clock -period 5.000 -name clk200 [get_ports clk200_p]
-create_generated_clock -name clk_core -source [get_ports clk200_p] -divide_by 8 [get_pins i_coreclk_bufgdiv/O]
+create_generated_clock -name clk_core -source [get_pins i_coreclk_mmcm/CLKIN1] -divide_by 8 [get_pins i_coreclk_bufg/O]
 
 set_property -dict { PACKAGE_PIN R19 IOSTANDARD LVCMOS33 } [get_ports { cpu_resetn }]
 set_false_path -from [get_ports { cpu_resetn }]
