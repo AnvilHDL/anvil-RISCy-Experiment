@@ -123,6 +123,7 @@ module risky_genesys2_bram_top (
     reg [7:0] uart_fifo_push_data_q = 8'h00;
 
     reg       boot_banner_active_q = 1'b0;
+    reg       boot_banner_sent_q = 1'b0;
     reg [2:0] boot_banner_idx_q = 3'd0;
     reg       sim_exit_seen_q = 1'b0;
 
@@ -239,6 +240,7 @@ module risky_genesys2_bram_top (
             uart_fifo_push_addr_q <= 6'd0;
             uart_fifo_push_data_q <= 8'h00;
             boot_banner_active_q <= 1'b0;
+            boot_banner_sent_q <= 1'b0;
             boot_banner_idx_q <= 3'd0;
             sim_exit_seen_q <= 1'b0;
             led_msg_state_q <= 4'd0;
@@ -250,7 +252,7 @@ module risky_genesys2_bram_top (
             uart_tx_start_q <= 1'b0;
             uart_fifo_push_q <= 1'b0;
 
-            if (!boot_banner_active_q) begin
+            if (!boot_banner_active_q && !boot_banner_sent_q) begin
                 boot_banner_active_q <= 1'b1;
                 boot_banner_idx_q <= 3'd0;
             end
@@ -275,8 +277,8 @@ module risky_genesys2_bram_top (
                         3'd2: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "O"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd3; end
                         3'd3: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= "T"; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd4; end
                         3'd4: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0d; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_idx_q <= 3'd5; end
-                        3'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; end
-                        default: boot_banner_active_q <= 1'b0;
+                        3'd5: begin uart_fifo_push_q <= 1'b1; uart_fifo_push_addr_q <= uart_wr_ptr_q; uart_fifo_push_data_q <= 8'h0a; uart_wr_ptr_q <= uart_wr_ptr_q + 6'd1; uart_count_q <= uart_count_q + 7'd1; boot_banner_active_q <= 1'b0; boot_banner_sent_q <= 1'b1; end
+                        default: begin boot_banner_active_q <= 1'b0; boot_banner_sent_q <= 1'b1; end
                     endcase
                 end else if (core_store_valid_q && core_store_addr_q == UART_MMIO) begin
                     uart_fifo_push_q <= 1'b1;
