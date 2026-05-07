@@ -20,6 +20,7 @@ module risky_mig_adapter (
     input  wire        store_valid_i,
     input  wire [63:0] store_addr_i,
     input  wire [63:0] store_data_i,
+    input  wire [2:0]  store_width_i,
 
     // --- Response back to arbiter ---
     output reg         rsp_valid_o,
@@ -159,8 +160,10 @@ module risky_mig_adapter (
                     if (store_valid_i) begin
                         saved_needs_rsp_q <= 1'b0;
                         saved_addr_q      <= axi_addr64(store_addr_i);
+                        // core already shifts data into the correct byte lane;
+                        // use proper byte enables so adjacent bytes are preserved
                         saved_wdata_q     <= store_data_i;
-                        saved_wstrb_q     <= 8'hff;
+                        saved_wstrb_q     <= req_wstrb(store_width_i, store_addr_i[2:0]);
                         state_q           <= WRITE_AW;
                     end else if (req_valid_i) begin
                         saved_addr_q <= axi_addr64(req_addr_i);

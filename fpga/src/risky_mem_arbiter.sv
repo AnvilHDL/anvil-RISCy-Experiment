@@ -43,7 +43,13 @@ module risky_mem_arbiter (
     output reg  [63:0] mem_wdata_o,
     output reg  [2:0]  mem_width_o,
     input  wire        mem_rsp_valid_i,
-    input  wire [63:0] mem_rsp_data_i
+    input  wire [63:0] mem_rsp_data_i,
+
+    // --- Pipeline stall output ---
+    // High whenever a downstream request is in flight OR a new request is
+    // being accepted this cycle.  Feed into sv39_stall_i (OR with ptw stall)
+    // so the core freezes until the DDR response returns.
+    output wire        stall_o
 );
 
     // Track which requestor is outstanding
@@ -55,7 +61,12 @@ module risky_mem_arbiter (
     } arb_owner_t;
 
     arb_owner_t owner_q = IDLE_;
-    reg [63:0] if_half_addr_q = 64'd0;  // track which 32-bit half was requested
+    reg [63:0] if_half_addr_q = 64'd0;
+
+    // Stall: high while a request is in-flight OR in the accepting cycle.
+    // The DDR top ORs this with sv39_stall to freeze the pipeline until
+    // the response arrives.
+    assign stall_o = (owner_q != IDLE_) || if_req_valid_i || mem_req_valid_i;
 
     always @(posedge clk_i) begin
         if (!rst_ni) begin
@@ -66,11 +77,14 @@ module risky_mem_arbiter (
             mem_rsp_valid_o<= 1'b0;
             ptw_rsp_valid_o<= 1'b0;
         end else begin
-            // Default: clear response pulses
+            // Default: clear one-cycle response pulses only.
+            // mem_req_o is a LEVEL signal: held high from acceptance until
+            // the downstream fires mem_rsp_valid_i.  This way the mig_adapter
+            // will see and accept the request even if it is momentarily busy
+            // draining a committed store.
             if_rsp_valid_o  <= 1'b0;
             mem_rsp_valid_o <= 1'b0;
             ptw_rsp_valid_o <= 1'b0;
-            mem_req_o       <= 1'b0;
 
             if (owner_q == IDLE_) begin
                 // Arbitrate: PTW > MEM > IF
@@ -80,7 +94,7 @@ module risky_mem_arbiter (
                     mem_addr_o <= ptw_req_addr_i;
                     mem_write_o<= 1'b0;
                     mem_wdata_o<= 64'd0;
-                    mem_width_o<= 3'd3;  // 64-bit PTE
+                    mem_width_o<= 3'd3;
                 end else if (mem_req_valid_i) begin
                     owner_q     <= IN_MEM;
                     mem_req_o   <= 1'b1;
@@ -89,17 +103,19 @@ module risky_mem_arbiter (
                     mem_wdata_o <= mem_req_wdata_i;
                     mem_width_o <= mem_req_width_i;
                 end else if (if_req_valid_i) begin
-                    owner_q         <= IN_IF;
-                    mem_req_o       <= 1'b1;
-                    mem_addr_o      <= {if_req_addr_i[63:3], 3'd0};  // align to 8B
-                    mem_write_o     <= 1'b0;
-                    mem_wdata_o     <= 64'd0;
-                    mem_width_o     <= 3'd3;
-                    if_half_addr_q  <= if_req_addr_i;
+                    owner_q        <= IN_IF;
+                    mem_req_o      <= 1'b1;
+                    mem_addr_o     <= {if_req_addr_i[63:3], 3'd0};
+                    mem_write_o    <= 1'b0;
+                    mem_wdata_o    <= 64'd0;
+                    mem_width_o    <= 3'd3;
+                    if_half_addr_q <= if_req_addr_i;
                 end
             end else begin
                 // Waiting for downstream response
                 if (mem_rsp_valid_i) begin
+                    mem_req_o <= 1'b0;
+                    owner_q   <= IDLE_;
                     case (owner_q)
                         IN_PTW: begin
                             ptw_rsp_valid_o <= 1'b1;
@@ -117,7 +133,6 @@ module risky_mem_arbiter (
                         end
                         default: ;
                     endcase
-                    owner_q <= IDLE_;
                 end
             end
         end

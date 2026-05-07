@@ -26,6 +26,7 @@ cp "$SRC/risky_mig_adapter.sv"       "$FPGA_OUT_DIR/"
 echo "[fpga-ddr] verilator lint (DDR top, excl. MIG)..."
 verilator --lint-only --sv --Wall --Wno-UNUSED --Wno-UNDRIVEN \
   -Wno-DECLFILENAME \
+  --bbox-module axi_clock_converter_0 \
   --top-module risky_genesys2_ddr_top \
   "$FPGA_OUT_DIR/risky_genesys2_ddr_top.sv" \
   "$FPGA_OUT_DIR/risky_ptw.sv" \

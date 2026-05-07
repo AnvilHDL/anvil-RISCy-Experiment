@@ -49,6 +49,26 @@ set mig_rtl_files [split [exec find "$mig_user_dir/rtl" -type f -name "*.v"] "\n
 read_verilog $mig_rtl_files
 read_xdc "$mig_user_dir/constraints/mig_7series_0.xdc"
 
+# ---- Generate AXI Clock Converter IP ----
+set cdc_xci "$build_dir/project/ip/axi_clock_converter_0/axi_clock_converter_0.xci"
+if {![file exists $cdc_xci]} {
+  puts "Generating AXI Clock Converter IP..."
+  create_ip -name axi_clock_converter -vendor xilinx.com -library ip \
+            -module_name axi_clock_converter_0 -dir "$build_dir/project/ip"
+  set_property -dict [list \
+    CONFIG.ADDR_WIDTH {30} \
+    CONFIG.DATA_WIDTH {64} \
+    CONFIG.ID_WIDTH   {5}  \
+    CONFIG.ACLK_ASYNC {1}  \
+  ] [get_ips axi_clock_converter_0]
+  generate_target all [get_ips axi_clock_converter_0]
+  export_ip_user_files -of_objects [get_ips axi_clock_converter_0] \
+                       -no_script -sync -force -quiet
+} else {
+  puts "AXI Clock Converter IP already exists at $cdc_xci"
+}
+read_ip $cdc_xci
+
 # ---- RTL sources ----
 set rtl_dir "$root_dir/build/fpga/rtl"
 set sv_files [list \
