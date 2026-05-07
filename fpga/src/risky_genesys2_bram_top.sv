@@ -99,7 +99,7 @@ module risky_genesys2_bram_top (
 
     reg [7:0] reset_sync = 8'h00;
     wire core_resetn = cpu_resetn && core_clk_locked;
-    always @(posedge clk_core) begin
+    always @(posedge clk_core or negedge core_resetn) begin
         if (!core_resetn) begin
             reset_sync <= 8'h00;
         end else begin
