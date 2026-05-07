@@ -1,17 +1,9 @@
-// risky_mig_adapter.sv — MIG 7-series Native UI Adapter
+// risky_mig_adapter.sv - simple request/response bridge to MIG AXI4
 //
-// Translates simple request/response handshake into MIG's native UI protocol.
-//
-// MIG UI key facts for Kintex-7 at 50 MHz ui_clk, 400 MHz DDR3:
-//   - Data bus: 128 bits (burst length 8, 16 bytes per transaction)
-//   - Address: 29-bit word address (app_addr = byte_addr >> 3, shifted again by MIG)
-//   - Commands: 3'b000 = WRITE, 3'b001 = READ
-//   - app_rdy: command accepted when high at app_en assertion
-//   - app_wdf_rdy: write data FIFO ready
-//   - Read data arrives ~15 cycles later via app_rd_data_valid
-//
-// Byte-enable (mask) note: MIG mask is ACTIVE LOW (1 = mask this byte).
-// For a sub-64-bit store we compute the mask from width and byte offset.
+// The Genesys 2 DDR3 MIG project is configured with an AXI slave interface,
+// matching the CVA6 FPGA platform. This bridge intentionally issues only
+// single-beat 64-bit AXI transactions; wider/later burst support belongs above
+// this boundary once the core memory contract is latency-clean.
 
 module risky_mig_adapter (
     input  wire        clk_i,
@@ -33,191 +25,199 @@ module risky_mig_adapter (
     output reg         rsp_valid_o,
     output reg  [63:0] rsp_data_o,
 
-    // --- MIG UI ---
-    output reg  [28:0] app_addr_o,
-    output reg  [2:0]  app_cmd_o,
-    output reg         app_en_o,
-    output reg  [127:0] app_wdf_data_o,
-    output reg         app_wdf_end_o,
-    output reg  [15:0] app_wdf_mask_o,
-    output reg         app_wdf_wren_o,
-    input  wire [127:0] app_rd_data_i,
-    input  wire        app_rd_data_valid_i,
-    input  wire        app_rdy_i,
-    input  wire        app_wdf_rdy_i
+    // --- MIG AXI slave port ---
+    output wire [4:0]  s_axi_awid_o,
+    output reg  [29:0] s_axi_awaddr_o,
+    output wire [7:0]  s_axi_awlen_o,
+    output wire [2:0]  s_axi_awsize_o,
+    output wire [1:0]  s_axi_awburst_o,
+    output wire [0:0]  s_axi_awlock_o,
+    output wire [3:0]  s_axi_awcache_o,
+    output wire [2:0]  s_axi_awprot_o,
+    output wire [3:0]  s_axi_awqos_o,
+    output reg         s_axi_awvalid_o,
+    input  wire        s_axi_awready_i,
+    output reg  [63:0] s_axi_wdata_o,
+    output reg  [7:0]  s_axi_wstrb_o,
+    output wire        s_axi_wlast_o,
+    output reg         s_axi_wvalid_o,
+    input  wire        s_axi_wready_i,
+    output wire        s_axi_bready_o,
+    input  wire [4:0]  s_axi_bid_i,
+    input  wire [1:0]  s_axi_bresp_i,
+    input  wire        s_axi_bvalid_i,
+    output wire [4:0]  s_axi_arid_o,
+    output reg  [29:0] s_axi_araddr_o,
+    output wire [7:0]  s_axi_arlen_o,
+    output wire [2:0]  s_axi_arsize_o,
+    output wire [1:0]  s_axi_arburst_o,
+    output wire [0:0]  s_axi_arlock_o,
+    output wire [3:0]  s_axi_arcache_o,
+    output wire [2:0]  s_axi_arprot_o,
+    output wire [3:0]  s_axi_arqos_o,
+    output reg         s_axi_arvalid_o,
+    input  wire        s_axi_arready_i,
+    output wire        s_axi_rready_o,
+    input  wire [4:0]  s_axi_rid_i,
+    input  wire [63:0] s_axi_rdata_i,
+    input  wire [1:0]  s_axi_rresp_i,
+    input  wire        s_axi_rlast_i,
+    input  wire        s_axi_rvalid_i
 );
-
-    // MIG address: app_addr = byte_addr[31:3] (MIG internally shifts by 4 for 128-bit BL8)
-    // We send byte_addr >> 3 and MIG takes care of the rest.
-    function automatic [28:0] mig_addr;
-        input [63:0] byte_addr;
-        begin
-            mig_addr = byte_addr[31:3];
-        end
-    endfunction
-
-    // Build 128-bit write data + 16-bit mask from 64-bit data + byte offset + width
-    function automatic [127:0] expand_wdata;
-        input [63:0] data;
-        input [3:0]  byte_off;  // addr[3:0]
-        begin
-            expand_wdata = {64'd0, data} << (byte_off * 8);
-        end
-    endfunction
-
-    function automatic [15:0] expand_mask;
-        input [2:0] width;      // 0=byte,1=half,2=word,3=dword
-        input [3:0] byte_off;
-        reg [7:0] byte_en;
-        begin
-            case (width)
-                3'd0: byte_en = 8'b0000_0001 << byte_off[2:0];
-                3'd1: byte_en = 8'b0000_0011 << byte_off[2:0];
-                3'd2: byte_en = 8'b0000_1111 << byte_off[2:0];
-                3'd3: byte_en = 8'b1111_1111;
-                default: byte_en = 8'hFF;
-            endcase
-            // MIG mask is active-low (1=masked)
-            expand_mask = ~{8'd0, byte_en};
-        end
-    endfunction
-
-    // -------------------------------------------------------------------------
-    // State machine
-    // -------------------------------------------------------------------------
     typedef enum logic [2:0] {
         IDLE      = 3'd0,
-        CMD_WRITE = 3'd1,
-        DAT_WRITE = 3'd2,
-        CMD_READ  = 3'd3,
-        WAIT_READ = 3'd4,
-        DO_STORE  = 3'd5
-    } mig_state_t;
+        WRITE_AW  = 3'd1,
+        WRITE_W   = 3'd2,
+        WRITE_B   = 3'd3,
+        READ_AR   = 3'd4,
+        READ_R    = 3'd5
+    } axi_state_t;
 
-    mig_state_t state_q = IDLE;
+    axi_state_t state_q = IDLE;
 
-    reg [63:0]  saved_addr_q  = 64'd0;
-    reg [127:0] saved_wdata_q = 128'd0;
-    reg [15:0]  saved_mask_q  = 16'hFFFF;
-    reg         saved_is_store_q = 1'b0;  // pure write (no read response)
+    reg         saved_needs_rsp_q = 1'b0;
+    reg [29:0]  saved_addr_q = 30'd0;
+    reg [63:0]  saved_wdata_q = 64'd0;
+    reg [7:0]   saved_wstrb_q = 8'h00;
+
+    wire _unused_axi_status = |s_axi_bid_i | |s_axi_bresp_i | |s_axi_arid_o |
+                              |s_axi_rid_i | |s_axi_rresp_i | s_axi_rlast_i;
+
+    function automatic [29:0] axi_addr64;
+        input [63:0] addr;
+        begin
+            axi_addr64 = {addr[29:3], 3'b000};
+        end
+    endfunction
+
+    function automatic [7:0] req_wstrb;
+        input [2:0] width;
+        input [2:0] byte_off;
+        reg [7:0] mask;
+        begin
+            case (width)
+                3'd0: mask = 8'b0000_0001;
+                3'd1: mask = 8'b0000_0011;
+                3'd2: mask = 8'b0000_1111;
+                3'd3: mask = 8'b1111_1111;
+                default: mask = 8'b1111_1111;
+            endcase
+            req_wstrb = mask << byte_off;
+        end
+    endfunction
+
+    function automatic [63:0] req_wdata_shifted;
+        input [63:0] data;
+        input [2:0] byte_off;
+        begin
+            req_wdata_shifted = data << (byte_off * 8);
+        end
+    endfunction
+
+    assign s_axi_awid_o    = 5'd0;
+    assign s_axi_awlen_o   = 8'd0;
+    assign s_axi_awsize_o  = 3'd3;       // 8 bytes
+    assign s_axi_awburst_o = 2'b01;      // INCR
+    assign s_axi_awlock_o  = 1'b0;
+    assign s_axi_awcache_o = 4'b0011;
+    assign s_axi_awprot_o  = 3'b000;
+    assign s_axi_awqos_o   = 4'd0;
+    assign s_axi_wlast_o   = 1'b1;
+    assign s_axi_bready_o  = 1'b1;
+
+    assign s_axi_arid_o    = 5'd0;
+    assign s_axi_arlen_o   = 8'd0;
+    assign s_axi_arsize_o  = 3'd3;       // 8 bytes
+    assign s_axi_arburst_o = 2'b01;      // INCR
+    assign s_axi_arlock_o  = 1'b0;
+    assign s_axi_arcache_o = 4'b0011;
+    assign s_axi_arprot_o  = 3'b000;
+    assign s_axi_arqos_o   = 4'd0;
+    assign s_axi_rready_o  = 1'b1;
 
     always @(posedge clk_i) begin
         if (!rst_ni) begin
-            state_q        <= IDLE;
-            app_en_o       <= 1'b0;
-            app_wdf_wren_o <= 1'b0;
-            app_wdf_end_o  <= 1'b0;
-            rsp_valid_o    <= 1'b0;
-            app_cmd_o      <= 3'b001;
-            app_addr_o     <= 29'd0;
-            app_wdf_data_o <= 128'd0;
-            app_wdf_mask_o <= 16'hFFFF;
+            state_q         <= IDLE;
+            saved_needs_rsp_q <= 1'b0;
+            saved_addr_q    <= 30'd0;
+            saved_wdata_q   <= 64'd0;
+            saved_wstrb_q   <= 8'h00;
+            rsp_valid_o     <= 1'b0;
+            rsp_data_o      <= 64'd0;
+            s_axi_awaddr_o  <= 30'd0;
+            s_axi_awvalid_o <= 1'b0;
+            s_axi_wdata_o   <= 64'd0;
+            s_axi_wstrb_o   <= 8'h00;
+            s_axi_wvalid_o  <= 1'b0;
+            s_axi_araddr_o  <= 30'd0;
+            s_axi_arvalid_o <= 1'b0;
         end else begin
-            app_en_o       <= 1'b0;
-            app_wdf_wren_o <= 1'b0;
-            app_wdf_end_o  <= 1'b0;
-            rsp_valid_o    <= 1'b0;
+            rsp_valid_o <= 1'b0;
 
             case (state_q)
-                // ----------------------------------------------------------------
                 IDLE: begin
-                    // Committed stores take priority (write-only, no stall)
                     if (store_valid_i) begin
-                        saved_addr_q      <= store_addr_i;
-                        saved_wdata_q     <= expand_wdata(store_data_i, store_addr_i[3:0]);
-                        saved_mask_q      <= 16'h0000;  // full 128-bit write (safe)
-                        saved_is_store_q  <= 1'b1;
-                        state_q           <= DO_STORE;
+                        saved_needs_rsp_q <= 1'b0;
+                        saved_addr_q      <= axi_addr64(store_addr_i);
+                        saved_wdata_q     <= store_data_i;
+                        saved_wstrb_q     <= 8'hff;
+                        state_q           <= WRITE_AW;
                     end else if (req_valid_i) begin
-                        saved_addr_q  <= req_addr_i;
+                        saved_addr_q <= axi_addr64(req_addr_i);
                         if (req_write_i) begin
-                            saved_wdata_q    <= expand_wdata(req_wdata_i, req_addr_i[3:0]);
-                            saved_mask_q     <= expand_mask(req_width_i, req_addr_i[3:0]);
-                            saved_is_store_q <= 1'b0;
-                            state_q          <= CMD_WRITE;
+                            saved_needs_rsp_q <= 1'b1;
+                            saved_wdata_q     <= req_wdata_shifted(req_wdata_i, req_addr_i[2:0]);
+                            saved_wstrb_q     <= req_wstrb(req_width_i, req_addr_i[2:0]);
+                            state_q           <= WRITE_AW;
                         end else begin
-                            state_q <= CMD_READ;
+                            state_q <= READ_AR;
                         end
                     end
                 end
 
-                // ----------------------------------------------------------------
-                // Write command
-                // ----------------------------------------------------------------
-                CMD_WRITE: begin
-                    if (app_rdy_i) begin
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b000;  // WRITE
-                        app_addr_o <= mig_addr(saved_addr_q);
-                        state_q    <= DAT_WRITE;
-                    end else begin
-                        // Keep trying
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b000;
-                        app_addr_o <= mig_addr(saved_addr_q);
+                WRITE_AW: begin
+                    s_axi_awaddr_o  <= saved_addr_q;
+                    s_axi_awvalid_o <= 1'b1;
+                    if (s_axi_awready_i) begin
+                        s_axi_awvalid_o <= 1'b0;
+                        state_q <= WRITE_W;
                     end
                 end
 
-                // ----------------------------------------------------------------
-                // Write data
-                // ----------------------------------------------------------------
-                DAT_WRITE: begin
-                    if (app_wdf_rdy_i) begin
-                        app_wdf_wren_o <= 1'b1;
-                        app_wdf_end_o  <= 1'b1;
-                        app_wdf_data_o <= saved_wdata_q;
-                        app_wdf_mask_o <= saved_mask_q;
-                        if (!saved_is_store_q) begin
-                            rsp_valid_o <= 1'b1;  // write complete, ack to arbiter
+                WRITE_W: begin
+                    s_axi_wdata_o  <= saved_wdata_q;
+                    s_axi_wstrb_o  <= saved_wstrb_q;
+                    s_axi_wvalid_o <= 1'b1;
+                    if (s_axi_wready_i) begin
+                        s_axi_wvalid_o <= 1'b0;
+                        state_q <= WRITE_B;
+                    end
+                end
+
+                WRITE_B: begin
+                    if (s_axi_bvalid_i) begin
+                        if (saved_needs_rsp_q) begin
+                            rsp_valid_o <= 1'b1;
+                            rsp_data_o  <= 64'd0;
                         end
                         state_q <= IDLE;
                     end
                 end
 
-                // ----------------------------------------------------------------
-                // Committed store (best-effort, no response needed)
-                // ----------------------------------------------------------------
-                DO_STORE: begin
-                    if (app_rdy_i) begin
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b000;
-                        app_addr_o <= mig_addr(saved_addr_q);
-                        state_q    <= DAT_WRITE;
-                        saved_is_store_q <= 1'b1;
-                    end else begin
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b000;
-                        app_addr_o <= mig_addr(saved_addr_q);
+                READ_AR: begin
+                    s_axi_araddr_o  <= saved_addr_q;
+                    s_axi_arvalid_o <= 1'b1;
+                    if (s_axi_arready_i) begin
+                        s_axi_arvalid_o <= 1'b0;
+                        state_q <= READ_R;
                     end
                 end
 
-                // ----------------------------------------------------------------
-                // Read command
-                // ----------------------------------------------------------------
-                CMD_READ: begin
-                    if (app_rdy_i) begin
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b001;  // READ
-                        app_addr_o <= mig_addr(saved_addr_q);
-                        state_q    <= WAIT_READ;
-                    end else begin
-                        app_en_o   <= 1'b1;
-                        app_cmd_o  <= 3'b001;
-                        app_addr_o <= mig_addr(saved_addr_q);
-                    end
-                end
-
-                // ----------------------------------------------------------------
-                // Wait for read data
-                // ----------------------------------------------------------------
-                WAIT_READ: begin
-                    if (app_rd_data_valid_i) begin
+                READ_R: begin
+                    if (s_axi_rvalid_i) begin
                         rsp_valid_o <= 1'b1;
-                        // Return the relevant 64-bit slice from the 128-bit burst
-                        rsp_data_o  <= saved_addr_q[3]
-                                       ? app_rd_data_i[127:64]
-                                       : app_rd_data_i[63:0];
-                        state_q     <= IDLE;
+                        rsp_data_o  <= s_axi_rdata_i;
+                        state_q <= IDLE;
                     end
                 end
 

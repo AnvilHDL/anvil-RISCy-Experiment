@@ -20,15 +20,7 @@ module risky_genesys2_bram_top (
 );
     localparam logic [63:0] RAM_BASE = 64'h0000_0000_8000_0000;
     localparam int RAM_WORDS = 1024;
-    localparam logic [63:0] RAM_TOP = RAM_BASE + 64'(RAM_WORDS * 8);
-    localparam logic [63:0] LOAD_PC = RAM_BASE + 64'h0000_0000_0000_0024;
-    localparam logic [63:0] BNE_PC = RAM_BASE + 64'h0000_0000_0000_0048;
-    localparam logic [63:0] PASS_STORE_PC = RAM_BASE + 64'h0000_0000_0000_0050;
-    localparam logic [63:0] FAIL_LD_CONST_PC = RAM_BASE + 64'h0000_0000_0000_0188;
-    localparam logic [63:0] FAIL_STORE_PC = RAM_BASE + 64'h0000_0000_0000_01b8;
-    localparam logic [63:0] PROBE_WORD_ADDR = RAM_BASE + 64'h0000_0000_0000_01c0;
-    localparam logic [63:0] PROBE_WORD_VALUE = 64'h1122_3344_5566_7788;
-    localparam int CORE_CLK_HZ = 10_000_000;
+    localparam int CORE_CLK_HZ = 25_000_000;
     localparam int UART_BAUD = 115200;
     localparam int UART_FIFO_DEPTH = 64;
 
@@ -71,7 +63,7 @@ module risky_genesys2_bram_top (
         .CLKIN1_PERIOD(5.000),
         .CLKFBOUT_MULT_F(5.000),
         .DIVCLK_DIVIDE(1),
-        .CLKOUT0_DIVIDE_F(100.000),
+        .CLKOUT0_DIVIDE_F(40.000),
         .CLKOUT0_DUTY_CYCLE(0.500)
     ) i_coreclk_mmcm (
         .CLKIN1   (clk200),
@@ -154,11 +146,6 @@ module risky_genesys2_bram_top (
     wire        sv39_mem_pf_store;
 
     reg [31:0] heartbeat_q = 32'd0;
-    reg        dbg_probe_load_seen_q = 1'b0;
-    reg        dbg_probe_addr_seen_q = 1'b0;
-    reg        dbg_bne_seen_q = 1'b0;
-    reg        dbg_stage1_store_path_seen_q = 1'b0;
-    reg [3:0]  dbg_probe_data_nibble_q = 4'h0;
 
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
@@ -169,9 +156,6 @@ module risky_genesys2_bram_top (
     wire [3:0] uart_debug;
     wire [31:0] adapter_imem_rdata;
     wire [63:0] adapter_mem_rdata;
-    wire        dbg_probe_addr_active =
-        ((core_mem_addr == PROBE_WORD_ADDR) ||
-         (core_mem_req_addr == PROBE_WORD_ADDR));
 
     // Fold all future-use / observation-only outputs into the heartbeat counter so
     // Vivado preserves their fan-in cones without needing (* keep *) on dead nets.
@@ -200,28 +184,8 @@ module risky_genesys2_bram_top (
     always @(posedge clk_core) begin
         if (!rst_ni) begin
             heartbeat_q <= 32'd0;
-            dbg_probe_load_seen_q <= 1'b0;
-            dbg_probe_addr_seen_q <= 1'b0;
-            dbg_bne_seen_q <= 1'b0;
-            dbg_stage1_store_path_seen_q <= 1'b0;
-            dbg_probe_data_nibble_q <= 4'h0;
         end else begin
             heartbeat_q <= heartbeat_q + 32'd1 + {31'd0, ^_obs_fold};
-            if (core_pc == LOAD_PC) begin
-                dbg_probe_load_seen_q <= 1'b1;
-            end
-            if (dbg_probe_addr_active) begin
-                dbg_probe_addr_seen_q <= 1'b1;
-                dbg_probe_data_nibble_q <= adapter_mem_rdata[3:0];
-            end
-            if (core_pc == BNE_PC) begin
-                dbg_bne_seen_q <= 1'b1;
-            end
-            if ((core_pc == PASS_STORE_PC) ||
-                (core_pc == FAIL_LD_CONST_PC) ||
-                (core_pc == FAIL_STORE_PC)) begin
-                dbg_stage1_store_path_seen_q <= 1'b1;
-            end
         end
     end
 
@@ -326,10 +290,10 @@ module risky_genesys2_bram_top (
 
     assign led[0] = rst_ni;
     assign led[1] = heartbeat_q[22];
-    assign led[2] = dbg_probe_load_seen_q; // PC reached Stage 1 ld.
+    assign led[2] = uart_debug[1]; // THR store accepted by UART peripheral.
     assign led[3] = led_state[1];
-    assign led[4] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[0] : 1'b0;
-    assign led[5] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[1] : 1'b0;
-    assign led[6] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[2] : 1'b0;
-    assign led[7] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[3] : 1'b0;
+    assign led[4] = uart_debug[2]; // UART TX engine started at least once.
+    assign led[5] = led_state[3];
+    assign led[6] = led_state[4];
+    assign led[7] = uart_debug[3]; // Physical tx_o toggled at least once.
 endmodule

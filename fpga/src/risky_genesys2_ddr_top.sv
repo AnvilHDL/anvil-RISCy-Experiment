@@ -22,10 +22,10 @@ module risky_genesys2_ddr_top (
     output wire [7:0] led,
     output wire       fan_pwm,
 
-    // DDR3 pins (Genesys 2 — Micron MT41K256M16 HA-125, 512MB, x16)
-    inout  wire [15:0] ddr3_dq,
-    inout  wire [1:0]  ddr3_dqs_n,
-    inout  wire [1:0]  ddr3_dqs_p,
+    // DDR3 pins (Genesys 2, matching the CVA6 MIG project)
+    inout  wire [31:0] ddr3_dq,
+    inout  wire [3:0]  ddr3_dqs_n,
+    inout  wire [3:0]  ddr3_dqs_p,
     output wire [14:0] ddr3_addr,
     output wire [2:0]  ddr3_ba,
     output wire        ddr3_ras_n,
@@ -35,7 +35,8 @@ module risky_genesys2_ddr_top (
     output wire [0:0]  ddr3_ck_p,
     output wire [0:0]  ddr3_ck_n,
     output wire [0:0]  ddr3_cke,
-    output wire [1:0]  ddr3_dm,
+    output wire [0:0]  ddr3_cs_n,
+    output wire [3:0]  ddr3_dm,
     output wire [0:0]  ddr3_odt
 );
     // =========================================================================
@@ -45,34 +46,52 @@ module risky_genesys2_ddr_top (
     localparam int UART_BAUD    = 115200;
     localparam int UART_FIFO_DEPTH = 64;
 
-    wire clk200;
-    IBUFDS #(.DIFF_TERM("FALSE"), .IBUF_LOW_PWR("TRUE"), .IOSTANDARD("LVDS"))
-    i_clk_ibuf (.I(clk200_p), .IB(clk200_n), .O(clk200));
-
-    // MIG delivers: ui_clk (200 MHz controller ÷ 4 = 50 MHz), ui_clk_sync_rst
+    // MIG delivers ui_clk and ui_clk_sync_rst; the CPU runs in the MIG UI domain.
     wire clk_core;          // = mig ui_clk (50 MHz)
     wire mig_ui_clk_sync_rst;
     wire mig_mmcm_locked;
-    wire mig_calib_done;
     wire mig_init_calib_complete;
 
     // =========================================================================
-    // MIG instance (must be generated via Vivado IP Catalog for the board)
-    // The port list below matches the standard 7-series MIG with UI interface.
+    // MIG instance. Like CVA6's Genesys 2 target, our MIG is AXI-facing.
     // =========================================================================
-    // MIG native UI signals
-    wire [28:0]  mig_app_addr;
-    wire [2:0]   mig_app_cmd;
-    wire         mig_app_en;
-    wire [127:0] mig_app_wdf_data;
-    wire         mig_app_wdf_end;
-    wire [15:0]  mig_app_wdf_mask;
-    wire         mig_app_wdf_wren;
-    wire [127:0] mig_app_rd_data;
-    wire         mig_app_rd_data_end;
-    wire         mig_app_rd_data_valid;
-    wire         mig_app_rdy;
-    wire         mig_app_wdf_rdy;
+    wire [4:0]  mig_s_axi_awid;
+    wire [29:0] mig_s_axi_awaddr;
+    wire [7:0]  mig_s_axi_awlen;
+    wire [2:0]  mig_s_axi_awsize;
+    wire [1:0]  mig_s_axi_awburst;
+    wire [0:0]  mig_s_axi_awlock;
+    wire [3:0]  mig_s_axi_awcache;
+    wire [2:0]  mig_s_axi_awprot;
+    wire [3:0]  mig_s_axi_awqos;
+    wire        mig_s_axi_awvalid;
+    wire        mig_s_axi_awready;
+    wire [63:0] mig_s_axi_wdata;
+    wire [7:0]  mig_s_axi_wstrb;
+    wire        mig_s_axi_wlast;
+    wire        mig_s_axi_wvalid;
+    wire        mig_s_axi_wready;
+    wire        mig_s_axi_bready;
+    wire [4:0]  mig_s_axi_bid;
+    wire [1:0]  mig_s_axi_bresp;
+    wire        mig_s_axi_bvalid;
+    wire [4:0]  mig_s_axi_arid;
+    wire [29:0] mig_s_axi_araddr;
+    wire [7:0]  mig_s_axi_arlen;
+    wire [2:0]  mig_s_axi_arsize;
+    wire [1:0]  mig_s_axi_arburst;
+    wire [0:0]  mig_s_axi_arlock;
+    wire [3:0]  mig_s_axi_arcache;
+    wire [2:0]  mig_s_axi_arprot;
+    wire [3:0]  mig_s_axi_arqos;
+    wire        mig_s_axi_arvalid;
+    wire        mig_s_axi_arready;
+    wire        mig_s_axi_rready;
+    wire [4:0]  mig_s_axi_rid;
+    wire [63:0] mig_s_axi_rdata;
+    wire [1:0]  mig_s_axi_rresp;
+    wire        mig_s_axi_rlast;
+    wire        mig_s_axi_rvalid;
     wire         mig_app_sr_req = 1'b0;
     wire         mig_app_ref_req = 1'b0;
     wire         mig_app_zq_req = 1'b0;
@@ -91,24 +110,51 @@ module risky_genesys2_ddr_top (
         .ddr3_ck_p      (ddr3_ck_p),
         .ddr3_ck_n      (ddr3_ck_n),
         .ddr3_cke       (ddr3_cke),
+        .ddr3_cs_n      (ddr3_cs_n),
         .ddr3_dm        (ddr3_dm),
         .ddr3_odt       (ddr3_odt),
         // Clocks
-        .sys_clk_i      (clk200),
-        .clk_ref_i      (clk200),
-        // UI
-        .app_addr       (mig_app_addr),
-        .app_cmd        (mig_app_cmd),
-        .app_en         (mig_app_en),
-        .app_wdf_data   (mig_app_wdf_data),
-        .app_wdf_end    (mig_app_wdf_end),
-        .app_wdf_mask   (mig_app_wdf_mask),
-        .app_wdf_wren   (mig_app_wdf_wren),
-        .app_rd_data    (mig_app_rd_data),
-        .app_rd_data_end(mig_app_rd_data_end),
-        .app_rd_data_valid(mig_app_rd_data_valid),
-        .app_rdy        (mig_app_rdy),
-        .app_wdf_rdy    (mig_app_wdf_rdy),
+        .sys_clk_p      (clk200_p),
+        .sys_clk_n      (clk200_n),
+        // AXI
+        .aresetn        (cpu_resetn),
+        .s_axi_awid     (mig_s_axi_awid),
+        .s_axi_awaddr   (mig_s_axi_awaddr),
+        .s_axi_awlen    (mig_s_axi_awlen),
+        .s_axi_awsize   (mig_s_axi_awsize),
+        .s_axi_awburst  (mig_s_axi_awburst),
+        .s_axi_awlock   (mig_s_axi_awlock),
+        .s_axi_awcache  (mig_s_axi_awcache),
+        .s_axi_awprot   (mig_s_axi_awprot),
+        .s_axi_awqos    (mig_s_axi_awqos),
+        .s_axi_awvalid  (mig_s_axi_awvalid),
+        .s_axi_awready  (mig_s_axi_awready),
+        .s_axi_wdata    (mig_s_axi_wdata),
+        .s_axi_wstrb    (mig_s_axi_wstrb),
+        .s_axi_wlast    (mig_s_axi_wlast),
+        .s_axi_wvalid   (mig_s_axi_wvalid),
+        .s_axi_wready   (mig_s_axi_wready),
+        .s_axi_bready   (mig_s_axi_bready),
+        .s_axi_bid      (mig_s_axi_bid),
+        .s_axi_bresp    (mig_s_axi_bresp),
+        .s_axi_bvalid   (mig_s_axi_bvalid),
+        .s_axi_arid     (mig_s_axi_arid),
+        .s_axi_araddr   (mig_s_axi_araddr),
+        .s_axi_arlen    (mig_s_axi_arlen),
+        .s_axi_arsize   (mig_s_axi_arsize),
+        .s_axi_arburst  (mig_s_axi_arburst),
+        .s_axi_arlock   (mig_s_axi_arlock),
+        .s_axi_arcache  (mig_s_axi_arcache),
+        .s_axi_arprot   (mig_s_axi_arprot),
+        .s_axi_arqos    (mig_s_axi_arqos),
+        .s_axi_arvalid  (mig_s_axi_arvalid),
+        .s_axi_arready  (mig_s_axi_arready),
+        .s_axi_rready   (mig_s_axi_rready),
+        .s_axi_rid      (mig_s_axi_rid),
+        .s_axi_rdata    (mig_s_axi_rdata),
+        .s_axi_rresp    (mig_s_axi_rresp),
+        .s_axi_rlast    (mig_s_axi_rlast),
+        .s_axi_rvalid   (mig_s_axi_rvalid),
         .app_sr_req     (mig_app_sr_req),
         .app_ref_req    (mig_app_ref_req),
         .app_zq_req     (mig_app_zq_req),
@@ -118,7 +164,9 @@ module risky_genesys2_ddr_top (
         .ui_clk         (clk_core),
         .ui_clk_sync_rst(mig_ui_clk_sync_rst),
         .init_calib_complete(mig_init_calib_complete),
-        .sys_rst        (!cpu_resetn)
+        .mmcm_locked    (mig_mmcm_locked),
+        .device_temp    (),
+        .sys_rst        (cpu_resetn)
     );
 
     // =========================================================================
@@ -339,6 +387,7 @@ module risky_genesys2_ddr_top (
     // =========================================================================
     wire [63:0] mmio_rdata;
     wire [7:0]  led_state;
+    wire [3:0]  uart_debug;
 
     // MMIO: check if address is in MMIO range (not DDR3)
     wire arb_is_mmio = arb_mem_req && (arb_mem_addr[31:28] != 4'h8) &&
@@ -367,18 +416,44 @@ module risky_genesys2_ddr_top (
         // Response
         .rsp_valid_o        (arb_mem_rsp_valid),
         .rsp_data_o         (arb_mem_rsp_data),
-        // MIG UI
-        .app_addr_o         (mig_app_addr),
-        .app_cmd_o          (mig_app_cmd),
-        .app_en_o           (mig_app_en),
-        .app_wdf_data_o     (mig_app_wdf_data),
-        .app_wdf_end_o      (mig_app_wdf_end),
-        .app_wdf_mask_o     (mig_app_wdf_mask),
-        .app_wdf_wren_o     (mig_app_wdf_wren),
-        .app_rd_data_i      (mig_app_rd_data),
-        .app_rd_data_valid_i(mig_app_rd_data_valid),
-        .app_rdy_i          (mig_app_rdy),
-        .app_wdf_rdy_i      (mig_app_wdf_rdy)
+        // MIG AXI
+        .s_axi_awid_o       (mig_s_axi_awid),
+        .s_axi_awaddr_o     (mig_s_axi_awaddr),
+        .s_axi_awlen_o      (mig_s_axi_awlen),
+        .s_axi_awsize_o     (mig_s_axi_awsize),
+        .s_axi_awburst_o    (mig_s_axi_awburst),
+        .s_axi_awlock_o     (mig_s_axi_awlock),
+        .s_axi_awcache_o    (mig_s_axi_awcache),
+        .s_axi_awprot_o     (mig_s_axi_awprot),
+        .s_axi_awqos_o      (mig_s_axi_awqos),
+        .s_axi_awvalid_o    (mig_s_axi_awvalid),
+        .s_axi_awready_i    (mig_s_axi_awready),
+        .s_axi_wdata_o      (mig_s_axi_wdata),
+        .s_axi_wstrb_o      (mig_s_axi_wstrb),
+        .s_axi_wlast_o      (mig_s_axi_wlast),
+        .s_axi_wvalid_o     (mig_s_axi_wvalid),
+        .s_axi_wready_i     (mig_s_axi_wready),
+        .s_axi_bready_o     (mig_s_axi_bready),
+        .s_axi_bid_i        (mig_s_axi_bid),
+        .s_axi_bresp_i      (mig_s_axi_bresp),
+        .s_axi_bvalid_i     (mig_s_axi_bvalid),
+        .s_axi_arid_o       (mig_s_axi_arid),
+        .s_axi_araddr_o     (mig_s_axi_araddr),
+        .s_axi_arlen_o      (mig_s_axi_arlen),
+        .s_axi_arsize_o     (mig_s_axi_arsize),
+        .s_axi_arburst_o    (mig_s_axi_arburst),
+        .s_axi_arlock_o     (mig_s_axi_arlock),
+        .s_axi_arcache_o    (mig_s_axi_arcache),
+        .s_axi_arprot_o     (mig_s_axi_arprot),
+        .s_axi_arqos_o      (mig_s_axi_arqos),
+        .s_axi_arvalid_o    (mig_s_axi_arvalid),
+        .s_axi_arready_i    (mig_s_axi_arready),
+        .s_axi_rready_o     (mig_s_axi_rready),
+        .s_axi_rid_i        (mig_s_axi_rid),
+        .s_axi_rdata_i      (mig_s_axi_rdata),
+        .s_axi_rresp_i      (mig_s_axi_rresp),
+        .s_axi_rlast_i      (mig_s_axi_rlast),
+        .s_axi_rvalid_i     (mig_s_axi_rvalid)
     );
 
     // =========================================================================
@@ -405,11 +480,16 @@ module risky_genesys2_ddr_top (
         .ext_mip_o          (core_ext_mip),
         .tx_o               (tx),
         .led_o              (led_state),
+        .uart_debug_o        (uart_debug),
         .fan_pwm_o          (fan_pwm)
     );
 
     assign led[0] = rst_ni;
     assign led[1] = heartbeat_q[22];
     assign led[2] = mig_init_calib_complete;
-    assign led[7:3] = led_state[4:0];
+    assign led[3] = mig_mmcm_locked;
+    assign led[4] = mig_s_axi_arvalid | mig_s_axi_awvalid;
+    assign led[5] = mig_s_axi_arready | mig_s_axi_awready;
+    assign led[6] = mig_s_axi_rvalid | mig_s_axi_bvalid;
+    assign led[7] = led_state[1] | uart_debug[3];
 endmodule

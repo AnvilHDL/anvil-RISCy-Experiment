@@ -16,6 +16,7 @@ set xdc_file     "$root_dir/fpga/constraints/genesys2_ddr.xdc"
 
 file mkdir $build_dir
 file mkdir "$build_dir/reports"
+file mkdir "$build_dir/project/ip"
 create_project -force $project_name "$build_dir/project" -part $part_name
 set_property target_language   Verilog [current_project]
 set_property simulator_language Mixed  [current_project]
@@ -42,6 +43,11 @@ if {![file exists $mig_xci]} {
 } else {
   puts "MIG IP already exists at $mig_xci"
 }
+read_ip $mig_xci
+set mig_user_dir "$build_dir/project/ip/mig_7series_0/mig_7series_0/user_design"
+set mig_rtl_files [split [exec find "$mig_user_dir/rtl" -type f -name "*.v"] "\n"]
+read_verilog $mig_rtl_files
+read_xdc "$mig_user_dir/constraints/mig_7series_0.xdc"
 
 # ---- RTL sources ----
 set rtl_dir "$root_dir/build/fpga/rtl"
