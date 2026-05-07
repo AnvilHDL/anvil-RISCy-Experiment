@@ -306,7 +306,10 @@ module risky_genesys2_ddr_top (
     // Core
     // =========================================================================
     wire arb_stall;
-    wire stall_combined = sv39_stall || arb_stall;
+    // if_valid_q declared below; forward ref is fine in SystemVerilog module scope.
+    // Pipeline stalls while PTW walks, while arbiter is processing a request,
+    // OR while no instruction has been buffered yet for the current PC.
+    wire stall_combined = sv39_stall || arb_stall || !if_valid_q;
 
     pipeline_core_bram_if i_core (
         .clk_i              (clk_core),
@@ -401,28 +404,24 @@ module risky_genesys2_ddr_top (
     wire        arb_mem_data_rsp_valid;
     wire [63:0] arb_mem_data_rsp_data;
 
-    // DDR address range: 0x80020000 and above (above bootrom top)
-    // Bootrom range:     0x80000000..0x8001FFFF  (addr[31:17]==15'h4000)
-    // MMIO range:        addr[31:28] != 8/9
-    wire is_brom_if  = (sv39_if_pa[31:17]  == 15'h4000);
-    wire is_brom_mem = sv39_mem_valid && (sv39_mem_pa[31:17] == 15'h4000);
+    // MMIO range: not 0x8xxxxxxx or 0x9xxxxxxx (UART/CLINT/PLIC at 0x0x/0x1x).
+    // MMIO reads bypass the arbiter — mmio_rdata is combinatorial from peripherals.
+    // All other reads (bootrom + DDR) go through the arbiter.
     wire is_mmio_mem = sv39_mem_valid && !core_mem_write &&
                        (sv39_mem_pa[31:28] != 4'h8) && (sv39_mem_pa[31:28] != 4'h9);
-    wire is_ddr_if   = sv39_if_valid  && !is_brom_if;
-    wire is_ddr_mem  = sv39_mem_valid && !core_mem_write && !is_brom_mem && !is_mmio_mem;
 
-    // Gate new DDR-IF requests while a fetched instruction is buffered
-    // to prevent phantom re-fetches when the pipeline is still stalled.
-    wire arb_if_req = is_ddr_if && !if_ddr_valid_q;
+    // Gate new IF requests while a fetched instruction is buffered (if_valid_q=1)
+    // so the PTW cannot queue phantom re-fetches for the old PC while stalled.
+    // if_valid_q declared below; forward ref is fine in SV module scope.
 
     risky_mem_arbiter i_arbiter (
         .clk_i          (clk_core),
         .rst_ni         (rst_ni),
-        .if_req_valid_i (arb_if_req),
+        .if_req_valid_i (sv39_if_valid && !if_valid_q),
         .if_req_addr_i  (sv39_if_pa),
         .if_rsp_valid_o (arb_if_rsp_valid),
         .if_rsp_data_o  (arb_if_rsp_data),
-        .mem_req_valid_i(is_ddr_mem),
+        .mem_req_valid_i(sv39_mem_valid && !core_mem_write && !is_mmio_mem),
         .mem_req_addr_i (sv39_mem_pa),
         .mem_req_write_i(1'b0),
         .mem_req_wdata_i(64'd0),
@@ -444,64 +443,58 @@ module risky_genesys2_ddr_top (
     );
 
     // -------------------------------------------------------------------------
-    // Instruction path
+    // Instruction hold buffer
     //
-    // Bootrom range (0x80000000-0x8001FFFF): combinatorial async read from
-    // bootrom_if[] distributed RAM — zero latency, no stall needed.
+    // The arbiter returns a 1-cycle response pulse (arb_if_rsp_valid).
+    // The pipeline advances at the posedge where sv39_stall_q_q first sees 0
+    // — two pipeline register stages after stall_combined drops.
     //
-    // DDR range: arbiter fetches the instruction (arb_stall holds the
-    // pipeline).  A 1-cycle hold register bridges the arbiter response pulse
-    // to the pipeline advance cycle (which is 2 cycles after stall drops,
-    // due to the pipeline's double-registered stall input).  A 2-cycle shadow
-    // of stall_combined mirrors the pipeline's internal sv39_stall_q_q so we
-    // release the hold exactly when the pipeline consumes the instruction.
+    // Strategy: include !if_valid_q in stall_combined so the pipeline remains
+    // frozen until we have latched the instruction.  Once the arbiter fires
+    // arb_if_rsp_valid, we set if_hold_q and if_valid_q=1.  That drops
+    // stall_combined (assuming no PTW or MEM stall).  The pipeline then
+    // advances two cycles later, by which time if_hold_q has been stable
+    // for two cycles.  We track when the pipeline advances using a 2-cycle
+    // shadow of stall_combined (stall_d2 mirrors sv39_stall_q_q) and clear
+    // if_valid_q at that point so the next fetch can proceed.
     // -------------------------------------------------------------------------
-    wire [63:0] brom_if_word  = bootrom_if [sv39_if_pa[16:3]];
-    wire [63:0] brom_mem_word = bootrom_mem[sv39_mem_pa[16:3]];
-
-    reg [31:0] if_ddr_hold_q  = 32'h0000_0013;
-    reg        if_ddr_valid_q = 1'b0;
-    reg        stall_d1       = 1'b1;
-    reg        stall_d2       = 1'b1;
+    reg [31:0] if_hold_q  = 32'h0000_0013;
+    reg        if_valid_q = 1'b0;
+    reg        stall_d1   = 1'b1;
+    reg        stall_d2   = 1'b1;
 
     always @(posedge clk_core) begin
         if (!rst_ni) begin
-            if_ddr_valid_q <= 1'b0;
-            stall_d1       <= 1'b1;
-            stall_d2       <= 1'b1;
+            if_valid_q <= 1'b0;
+            stall_d1   <= 1'b1;
+            stall_d2   <= 1'b1;
         end else begin
             stall_d1 <= stall_combined;
             stall_d2 <= stall_d1;
             if (arb_if_rsp_valid) begin
-                if_ddr_hold_q  <= arb_if_rsp_data;
-                if_ddr_valid_q <= 1'b1;
-            end else if (!stall_d2 && if_ddr_valid_q) begin
-                // stall_d2 mirrors sv39_stall_q_q in the pipeline: when it
-                // goes 0 the pipeline is advancing this cycle and consuming
-                // the buffered instruction.
-                if_ddr_valid_q <= 1'b0;
+                if_hold_q  <= arb_if_rsp_data;
+                if_valid_q <= 1'b1;
+            end else if (!stall_d2 && if_valid_q) begin
+                // stall_d2 matches sv39_stall_q_q: zero means pipeline is
+                // advancing this cycle and consuming the buffered instruction.
+                if_valid_q <= 1'b0;
             end
         end
     end
 
-    // DDR MEM read: latch the arbiter response; stall keeps the pipeline
-    // frozen until the response arrives, then drops.  Pipeline advances
-    // 2 cycles later (double-registered stall) by which time the hold
-    // register is stable with the correct data.
-    reg [63:0] mem_ddr_hold_q = 64'd0;
+    assign core_imem_rdata = if_hold_q;
+
+    // MEM hold register: covers both bootrom (1-cycle brom_resp_q) and DDR
+    // reads.  arb_stall keeps the pipeline frozen; stall drops 1 cycle before
+    // the arbiter fires arb_mem_data_rsp_valid, so mem_hold_q is stable for
+    // at least 2 cycles before the pipeline advances.
+    reg [63:0] mem_hold_q = 64'd0;
     always @(posedge clk_core)
-        if (arb_mem_data_rsp_valid) mem_ddr_hold_q <= arb_mem_data_rsp_data;
+        if (arb_mem_data_rsp_valid) mem_hold_q <= arb_mem_data_rsp_data;
 
-    assign core_imem_rdata = is_brom_if
-        ? (sv39_if_pa[2] ? brom_if_word[63:32] : brom_if_word[31:0])
-        : if_ddr_hold_q;
-
-    // MMIO reads: mmio_rdata is combinatorial from risky_fpga_peripherals.
-    // Bootrom reads: async from distributed RAM.
-    // DDR reads: held in mem_ddr_hold_q until pipeline advances.
-    assign core_mem_rdata = is_brom_mem  ? brom_mem_word
-                          : is_mmio_mem  ? mmio_rdata
-                          : mem_ddr_hold_q;
+    // MMIO reads bypass the arbiter: mmio_rdata is combinatorial from
+    // risky_fpga_peripherals.  All other reads return mem_hold_q.
+    assign core_mem_rdata = is_mmio_mem ? mmio_rdata : mem_hold_q;
 
     // =========================================================================
     // MMIO decode
@@ -523,42 +516,22 @@ module risky_genesys2_ddr_top (
                             (core_store_addr_q[31:17] == 15'h4000);
 
     // =========================================================================
-    // Bootrom — 128 KB at 0x80000000..0x8001FFFF (kernel .text/.rodata/.data)
-    //
-    // Three views, same contents:
-    //   bootrom_if[]  — distributed RAM, combinatorial read for IF path
-    //   bootrom_mem[] — distributed RAM, combinatorial read for MEM path
-    //   bootrom[]     — block RAM, registered read for PTW path via arbiter
-    //
-    // Distributed RAM uses ~2×16384 = 32768 LUT6s (~16% of XC7K325T).
-    // PTW page-table reads may land in this range (kalloc starts at kernel
-    // end, which may be < 0x80020000), so the block-RAM copy is kept for
-    // the arbiter path.  IF and MEM bypass the arbiter entirely.
+    // Bootrom BRAM — 128 KB, initialized with the xv6 kernel binary.
+    // All accesses (IF, MEM, PTW) go through the arbiter which issues a
+    // one-cycle brom_resp_q response the cycle after seeing arb_is_bootrom.
     // =========================================================================
-    (* ram_style = "distributed" *) reg [63:0] bootrom_if  [0:16383];
-    (* ram_style = "distributed" *) reg [63:0] bootrom_mem [0:16383];
-    (* ram_style = "block"       *) reg [63:0] bootrom     [0:16383];
+    (* ram_style = "block" *) reg [63:0] bootrom [0:16383];
 
     integer _brom_i;
     initial begin
-        for (_brom_i = 0; _brom_i < 16384; _brom_i = _brom_i + 1) begin
-            bootrom_if [_brom_i] = 64'd0;
-            bootrom_mem[_brom_i] = 64'd0;
-            bootrom    [_brom_i] = 64'd0;
-        end
+        for (_brom_i = 0; _brom_i < 16384; _brom_i = _brom_i + 1)
+            bootrom[_brom_i] = 64'd0;
 `ifndef __VERILATOR__
-`define bootrom bootrom_if
-`include "risky_genesys2_ddr_bootrom_init.vh"   // → bootrom_if[N] = ...
-`undef bootrom
-`define bootrom bootrom_mem
-`include "risky_genesys2_ddr_bootrom_init.vh"   // → bootrom_mem[N] = ...
-`undef bootrom
-`include "risky_genesys2_ddr_bootrom_init.vh"   // → bootrom[N] = ...
+`include "risky_genesys2_ddr_bootrom_init.vh"
 `endif
     end
 
-    // Registered read for PTW path (block RAM, 1-cycle latency).
-    // Arbiter holds mem_req_o until brom_resp_q fires.
+    // 1-cycle registered response for arbiter bootrom requests.
     reg brom_resp_q  = 1'b0;
     reg [63:0] brom_data_q = 64'd0;
 
@@ -584,17 +557,10 @@ module risky_genesys2_ddr_top (
     end
 
     always @(posedge clk_core) begin
-        if (store_to_bootrom) begin
-            bootrom_if [core_store_addr_q[16:3]] <=
-                (bootrom_if [core_store_addr_q[16:3]] & ~brom_wr_mask) |
+        if (store_to_bootrom)
+            bootrom[core_store_addr_q[16:3]] <=
+                (bootrom[core_store_addr_q[16:3]] & ~brom_wr_mask) |
                 (core_store_word_q & brom_wr_mask);
-            bootrom_mem[core_store_addr_q[16:3]] <=
-                (bootrom_mem[core_store_addr_q[16:3]] & ~brom_wr_mask) |
-                (core_store_word_q & brom_wr_mask);
-            bootrom    [core_store_addr_q[16:3]] <=
-                (bootrom    [core_store_addr_q[16:3]] & ~brom_wr_mask) |
-                (core_store_word_q & brom_wr_mask);
-        end
     end
 
     // =========================================================================
