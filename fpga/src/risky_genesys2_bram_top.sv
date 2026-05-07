@@ -156,9 +156,9 @@ module risky_genesys2_bram_top (
     reg [31:0] heartbeat_q = 32'd0;
     reg        dbg_probe_load_seen_q = 1'b0;
     reg        dbg_probe_addr_seen_q = 1'b0;
-    reg        dbg_probe_data_match_q = 1'b0;
     reg        dbg_bne_seen_q = 1'b0;
     reg        dbg_stage1_store_path_seen_q = 1'b0;
+    reg [3:0]  dbg_probe_data_nibble_q = 4'h0;
 
     reg [63:0] core_store_addr_q = RAM_BASE;
     reg [63:0] core_store_word_q = 64'd0;
@@ -202,9 +202,9 @@ module risky_genesys2_bram_top (
             heartbeat_q <= 32'd0;
             dbg_probe_load_seen_q <= 1'b0;
             dbg_probe_addr_seen_q <= 1'b0;
-            dbg_probe_data_match_q <= 1'b0;
             dbg_bne_seen_q <= 1'b0;
             dbg_stage1_store_path_seen_q <= 1'b0;
+            dbg_probe_data_nibble_q <= 4'h0;
         end else begin
             heartbeat_q <= heartbeat_q + 32'd1 + {31'd0, ^_obs_fold};
             if (core_pc == LOAD_PC) begin
@@ -212,7 +212,7 @@ module risky_genesys2_bram_top (
             end
             if (dbg_probe_addr_active) begin
                 dbg_probe_addr_seen_q <= 1'b1;
-                dbg_probe_data_match_q <= (adapter_mem_rdata == PROBE_WORD_VALUE);
+                dbg_probe_data_nibble_q <= adapter_mem_rdata[3:0];
             end
             if (core_pc == BNE_PC) begin
                 dbg_bne_seen_q <= 1'b1;
@@ -328,8 +328,8 @@ module risky_genesys2_bram_top (
     assign led[1] = heartbeat_q[22];
     assign led[2] = dbg_probe_load_seen_q; // PC reached Stage 1 ld.
     assign led[3] = led_state[1];
-    assign led[4] = dbg_probe_addr_seen_q; // Data address hit probe_word.
-    assign led[5] = dbg_probe_data_match_q; // Adapter returned probe_word value.
-    assign led[6] = dbg_bne_seen_q; // Compare branch reached.
-    assign led[7] = dbg_stage1_store_path_seen_q; // Pass/fail path reached.
+    assign led[4] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[0] : 1'b0;
+    assign led[5] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[1] : 1'b0;
+    assign led[6] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[2] : 1'b0;
+    assign led[7] = dbg_probe_addr_seen_q ? dbg_probe_data_nibble_q[3] : 1'b0;
 endmodule
