@@ -391,6 +391,10 @@ module risky_genesys2_ddr_top (
     wire [2:0]  arb_mem_width;
     wire        arb_mem_rsp_valid;
     wire [63:0] arb_mem_rsp_data;
+    wire        ddr_rsp_valid;
+    wire [63:0] ddr_rsp_data;
+    assign arb_mem_rsp_valid = brom_resp_q | ddr_rsp_valid;
+    assign arb_mem_rsp_data  = brom_resp_q ? brom_data_q : ddr_rsp_data;
 
     wire [31:0] arb_if_rsp_data;
     wire        arb_if_rsp_valid;
@@ -433,12 +437,71 @@ module risky_genesys2_ddr_top (
     // =========================================================================
     wire arb_is_mmio = arb_mem_req && (arb_mem_addr[31:28] != 4'h8) &&
                                       (arb_mem_addr[31:28] != 4'h9);
-    wire arb_is_ddr  = arb_mem_req && !arb_is_mmio;
+
+    // Bootrom BRAM: 128KB at 0x80000000..0x8001FFFF
+    // addr[31:17] == 15'h4000 selects exactly that range.
+    wire arb_is_bootrom = arb_mem_req && (arb_mem_addr[31:17] == 15'h4000);
+    wire arb_is_ddr     = arb_mem_req && !arb_is_mmio && !arb_is_bootrom;
 
     wire store_to_mmio = core_store_valid_q &&
                          ((core_store_addr_q[31:28] == 4'h1)  ||
                           (core_store_addr_q[31:24] == 8'h02) ||
                           (core_store_addr_q[31:26] == 6'd3));
+
+    wire store_to_bootrom = core_store_valid_q && !store_to_mmio &&
+                            (core_store_addr_q[31:17] == 15'h4000);
+
+    // =========================================================================
+    // Bootrom BRAM — 128 KB, initialized with the xv6 kernel binary.
+    // Covers 0x80000000..0x8001FFFF: kernel .text/.rodata/.data live here;
+    // xv6's own entry code zeros .bss in this range at boot.
+    // DDR3 covers 0x80020000 and up (page-allocator range up to PHYSTOP).
+    // =========================================================================
+    (* ram_style = "block" *) reg [63:0] bootrom [0:16383];
+
+    integer _brom_i;
+    initial begin
+        for (_brom_i = 0; _brom_i < 16384; _brom_i = _brom_i + 1)
+            bootrom[_brom_i] = 64'd0;
+`ifndef __VERILATOR__
+`include "risky_genesys2_ddr_bootrom_init.vh"
+`endif
+    end
+
+    // Registered read — arbiter holds arb_mem_req (mem_req_o) until response.
+    // We generate a one-cycle response pulse on the cycle after first seeing
+    // the bootrom request, then suppress it so it fires exactly once.
+    reg brom_resp_q  = 1'b0;
+    reg [63:0] brom_data_q = 64'd0;
+
+    always @(posedge clk_core) begin
+        if (!rst_ni) begin
+            brom_resp_q <= 1'b0;
+        end else begin
+            brom_resp_q <= arb_is_bootrom && !brom_resp_q;
+            if (arb_is_bootrom && !brom_resp_q)
+                brom_data_q <= bootrom[arb_mem_addr[16:3]];
+        end
+    end
+
+    // Masked write for sub-64-bit stores into bootrom range (e.g. BSS zeroing).
+    // Precompute mask combinatorially, then apply in the clocked write.
+    reg [63:0] brom_wr_mask;
+    always @(*) begin
+        case (core_store_width_q)
+            3'd0:    brom_wr_mask = 64'hFF              << (core_store_addr_q[2:0] * 8);
+            3'd1:    brom_wr_mask = 64'hFFFF            << (core_store_addr_q[2:0] * 8);
+            3'd2:    brom_wr_mask = 64'hFFFF_FFFF       << (core_store_addr_q[2:0] * 8);
+            default: brom_wr_mask = 64'hFFFF_FFFF_FFFF_FFFF;
+        endcase
+    end
+
+    always @(posedge clk_core) begin
+        if (store_to_bootrom)
+            bootrom[core_store_addr_q[16:3]] <=
+                (bootrom[core_store_addr_q[16:3]] & ~brom_wr_mask) |
+                (core_store_word_q & brom_wr_mask);
+    end
 
     // =========================================================================
     // Core-domain AXI wires (25 MHz) — from mig_adapter to CDC slave port
@@ -492,12 +555,12 @@ module risky_genesys2_ddr_top (
         .req_write_i        (arb_mem_write),
         .req_wdata_i        (arb_mem_wdata),
         .req_width_i        (arb_mem_width),
-        .store_valid_i      (core_store_valid_q && !store_to_mmio),
+        .store_valid_i      (core_store_valid_q && !store_to_mmio && !store_to_bootrom),
         .store_addr_i       (core_store_addr_q),
         .store_data_i       (core_store_word_q),
         .store_width_i      (core_store_width_q),
-        .rsp_valid_o        (arb_mem_rsp_valid),
-        .rsp_data_o         (arb_mem_rsp_data),
+        .rsp_valid_o        (ddr_rsp_valid),
+        .rsp_data_o         (ddr_rsp_data),
         .s_axi_awid_o       (c_axi_awid),
         .s_axi_awaddr_o     (c_axi_awaddr),
         .s_axi_awlen_o      (c_axi_awlen),

@@ -17,6 +17,7 @@ echo "[fpga-ddr] patching Anvil core RTL..."
 # ---- DDR-specific modules ----
 echo "[fpga-ddr] copying DDR3 RTL modules..."
 cp "$SRC/risky_genesys2_ddr_top.sv"  "$FPGA_OUT_DIR/"
+cp "$ROOT/fpga/ip/risky_genesys2_ddr_bootrom_init.vh" "$FPGA_OUT_DIR/"
 cp "$SRC/risky_ptw.sv"               "$FPGA_OUT_DIR/"
 cp "$SRC/risky_mem_arbiter.sv"       "$FPGA_OUT_DIR/"
 cp "$SRC/risky_mig_adapter.sv"       "$FPGA_OUT_DIR/"

@@ -96,6 +96,8 @@ foreach f $sv_files {
   if {![file exists $f]} { error "Missing RTL file: $f" }
 }
 read_verilog -sv $sv_files
+# Add RTL dir to include search path so `include "*.vh" resolves
+set_property include_dirs [list $rtl_dir] [current_fileset]
 read_xdc $xdc_file
 set_property top $top_name [current_fileset]
 update_compile_order -fileset sources_1

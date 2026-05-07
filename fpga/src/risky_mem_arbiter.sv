@@ -63,10 +63,10 @@ module risky_mem_arbiter (
     arb_owner_t owner_q = IDLE_;
     reg [63:0] if_half_addr_q = 64'd0;
 
-    // Stall: high while a request is in-flight OR in the accepting cycle.
-    // The DDR top ORs this with sv39_stall to freeze the pipeline until
-    // the response arrives.
-    assign stall_o = (owner_q != IDLE_) || if_req_valid_i || mem_req_valid_i;
+    // Stall: high while a request is in-flight.
+    // sv39_if_valid fires every cycle in M-mode (PTW pass-through); do NOT
+    // include if_req_valid_i here or the pipeline stalls permanently.
+    assign stall_o = (owner_q != IDLE_);
 
     always @(posedge clk_i) begin
         if (!rst_ni) begin
