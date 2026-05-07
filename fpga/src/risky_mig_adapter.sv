@@ -181,7 +181,7 @@ module risky_mig_adapter (
                 WRITE_AW: begin
                     s_axi_awaddr_o  <= saved_addr_q;
                     s_axi_awvalid_o <= 1'b1;
-                    if (s_axi_awready_i) begin
+                    if (s_axi_awvalid_o && s_axi_awready_i) begin
                         s_axi_awvalid_o <= 1'b0;
                         state_q <= WRITE_W;
                     end
@@ -191,7 +191,7 @@ module risky_mig_adapter (
                     s_axi_wdata_o  <= saved_wdata_q;
                     s_axi_wstrb_o  <= saved_wstrb_q;
                     s_axi_wvalid_o <= 1'b1;
-                    if (s_axi_wready_i) begin
+                    if (s_axi_wvalid_o && s_axi_wready_i) begin
                         s_axi_wvalid_o <= 1'b0;
                         state_q <= WRITE_B;
                     end
@@ -210,7 +210,7 @@ module risky_mig_adapter (
                 READ_AR: begin
                     s_axi_araddr_o  <= saved_addr_q;
                     s_axi_arvalid_o <= 1'b1;
-                    if (s_axi_arready_i) begin
+                    if (s_axi_arvalid_o && s_axi_arready_i) begin
                         s_axi_arvalid_o <= 1'b0;
                         state_q <= READ_R;
                     end
