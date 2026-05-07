@@ -67,8 +67,7 @@ module risky_mem_arbiter (
     // IF stalling is handled externally via an instruction-hold buffer
     // (see risky_genesys2_ddr_top.sv) so we must NOT include IN_IF here —
     // the arbiter asserts stall only while waiting for a data/PTW response.
-    assign stall_o = (owner_q == IN_MEM || owner_q == IN_PTW)
-                     && !mem_rsp_valid_i;
+    assign stall_o = (owner_q != IDLE_) && !mem_rsp_valid_i;
 
     always @(posedge clk_i) begin
         if (!rst_ni) begin
