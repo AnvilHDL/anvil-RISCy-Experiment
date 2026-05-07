@@ -313,8 +313,8 @@ module risky_genesys2_ddr_top (
         .ext_mip_i          (core_ext_mip),
         .imem_rdata_i       (core_imem_rdata),
         .mem_rdata_i        (core_mem_rdata),
-        // PTW stall OR arbiter stall (DDR multi-cycle latency)
-        .sv39_stall_i       (sv39_stall || arb_stall),
+        // PTW stall | MEM/PTW arbiter stall | no IF instruction ready yet
+        .sv39_stall_i       (sv39_stall || arb_stall || !if_instr_valid_q),
         .sv39_if_valid_i    (sv39_if_valid),
         .sv39_if_pa_i       (sv39_if_pa),
         .sv39_if_pf_i       (sv39_if_pf),
@@ -404,7 +404,7 @@ module risky_genesys2_ddr_top (
     risky_mem_arbiter i_arbiter (
         .clk_i          (clk_core),
         .rst_ni         (rst_ni),
-        .if_req_valid_i (sv39_if_valid),
+        .if_req_valid_i (sv39_if_valid_gated),
         .if_req_addr_i  (sv39_if_pa),
         .if_rsp_valid_o (arb_if_rsp_valid),
         .if_rsp_data_o  (arb_if_rsp_data),
@@ -429,7 +429,50 @@ module risky_genesys2_ddr_top (
         .stall_o        (arb_stall)
     );
 
-    assign core_imem_rdata = arb_if_rsp_valid       ? arb_if_rsp_data       : 32'h0000_0013;
+    // Instruction hold buffer.
+    //
+    // arb_if_rsp_valid is a 1-cycle pulse, but the pipeline latches
+    // imem_rdata_i one cycle AFTER sv39_stall_q_q first sees 0 (because
+    // sv39_stall_q_q is itself one cycle delayed from sv39_stall_i).
+    // Simply muxing on arb_if_rsp_valid therefore presents a NOP to the
+    // pipeline on the advance cycle.
+    //
+    // Fix: hold the fetched instruction in if_instr_hold_q until the
+    // pipeline has consumed it (detected via ext_stall_q, a 1-cycle shadow
+    // of sv39_stall_i that mirrors the pipeline's own sv39_stall_q_q).
+    // Gate new IF requests on !if_instr_valid_q so the PTW cannot queue a
+    // phantom re-fetch for the old PC while the pipeline is still stalled.
+    reg [31:0] if_instr_hold_q  = 32'h0000_0013;
+    reg        if_instr_valid_q = 1'b0;
+    reg        ext_stall_q      = 1'b1;
+
+    always @(posedge clk_core) begin
+        if (!rst_ni) begin
+            if_instr_valid_q <= 1'b0;
+            ext_stall_q      <= 1'b1;
+        end else begin
+            // Shadow the full stall signal so we know when the pipeline advances.
+            ext_stall_q <= sv39_stall || arb_stall || !if_instr_valid_q;
+
+            if (arb_if_rsp_valid) begin
+                // New instruction from arbiter — latch and mark ready.
+                if_instr_hold_q  <= arb_if_rsp_data;
+                if_instr_valid_q <= 1'b1;
+            end else if (!ext_stall_q && if_instr_valid_q) begin
+                // Pipeline advanced this cycle (ext_stall_q mirrors the
+                // registered stall that the pipeline uses internally).
+                // The instruction has been consumed; clear the ready flag so
+                // the next fetch can be issued.
+                if_instr_valid_q <= 1'b0;
+            end
+        end
+    end
+
+    // Only issue a new IF fetch when no instruction is buffered, preventing
+    // the PTW from queuing re-fetches for the old PC while the pipeline stalls.
+    wire sv39_if_valid_gated = sv39_if_valid && !if_instr_valid_q;
+
+    assign core_imem_rdata = if_instr_hold_q;
     assign core_mem_rdata  = arb_mem_data_rsp_valid  ? arb_mem_data_rsp_data : 64'd0;
 
     // =========================================================================

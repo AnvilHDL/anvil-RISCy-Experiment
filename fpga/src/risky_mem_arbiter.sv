@@ -63,19 +63,11 @@ module risky_mem_arbiter (
     arb_owner_t owner_q = IDLE_;
     reg [63:0] if_half_addr_q = 64'd0;
 
-    // Pipeline registers sv39_stall_i and imem_rdata_i with 1-cycle delay.
-    // To get correct timing we must:
-    //   - assert stall on the acceptance cycle (so sv39_stall_q = 1 when
-    //     the response arrives next cycle and the pipeline is frozen)
-    //   - release stall the same cycle mem_rsp_valid_i fires (so
-    //     sv39_stall_q = 0 the cycle after, when the pipeline uses the data)
-    //
-    // Including if_req_valid_i / mem_req_valid_i covers the acceptance
-    // cycle.  In M-mode if_req_valid_i is always 1, but gating by
-    // !mem_rsp_valid_i keeps it from becoming a permanent stall: stall_o
-    // drops to 0 exactly on the response cycle, then rises again for the
-    // next fetch — the pipeline advances once per fetch, as intended.
-    assign stall_o = ((owner_q != IDLE_) || if_req_valid_i || mem_req_valid_i)
+    // stall_o covers only in-flight MEM and PTW requests.
+    // IF stalling is handled externally via an instruction-hold buffer
+    // (see risky_genesys2_ddr_top.sv) so we must NOT include IN_IF here —
+    // the arbiter asserts stall only while waiting for a data/PTW response.
+    assign stall_o = (owner_q == IN_MEM || owner_q == IN_PTW)
                      && !mem_rsp_valid_i;
 
     always @(posedge clk_i) begin
