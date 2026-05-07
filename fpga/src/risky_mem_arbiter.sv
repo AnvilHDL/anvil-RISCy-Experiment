@@ -63,10 +63,20 @@ module risky_mem_arbiter (
     arb_owner_t owner_q = IDLE_;
     reg [63:0] if_half_addr_q = 64'd0;
 
-    // Stall: high while a request is in-flight.
-    // sv39_if_valid fires every cycle in M-mode (PTW pass-through); do NOT
-    // include if_req_valid_i here or the pipeline stalls permanently.
-    assign stall_o = (owner_q != IDLE_);
+    // Pipeline registers sv39_stall_i and imem_rdata_i with 1-cycle delay.
+    // To get correct timing we must:
+    //   - assert stall on the acceptance cycle (so sv39_stall_q = 1 when
+    //     the response arrives next cycle and the pipeline is frozen)
+    //   - release stall the same cycle mem_rsp_valid_i fires (so
+    //     sv39_stall_q = 0 the cycle after, when the pipeline uses the data)
+    //
+    // Including if_req_valid_i / mem_req_valid_i covers the acceptance
+    // cycle.  In M-mode if_req_valid_i is always 1, but gating by
+    // !mem_rsp_valid_i keeps it from becoming a permanent stall: stall_o
+    // drops to 0 exactly on the response cycle, then rises again for the
+    // next fetch — the pipeline advances once per fetch, as intended.
+    assign stall_o = ((owner_q != IDLE_) || if_req_valid_i || mem_req_valid_i)
+                     && !mem_rsp_valid_i;
 
     always @(posedge clk_i) begin
         if (!rst_ni) begin
