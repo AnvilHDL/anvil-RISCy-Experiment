@@ -1,21 +1,14 @@
 // risky_bram_mem_adapter.sv
 //
-// Maps the core's instruction-fetch and data-memory ports onto synchronous
-// block RAM.  The design uses ONE physical BRAM array written in the exact
-// pattern that Vivado's RAMB inference engine requires:
+// Maps the core's instruction-fetch and data-memory ports onto a tiny local
+// memory for BRAM bringup. The Anvil core expects combinatorial read data, so
+// this target intentionally uses distributed RAM rather than RAMB36 primitives.
 //
-//   Simple Dual-Port (SDP) BRAM pattern per Xilinx UG901:
-//     • One write port  (port A):  always write-enabled, data gated by WE
-//     • One read port   (port B):  always reads every cycle (no CE guard)
-//     • Both ports share the same clock
-//     • No read-first / write-first mux on the read output
-//
-// Two logical views of the array are provided by TWO separate BRAM instances:
-//   bram_if[]  — dedicated to IF reads (port B of instance 0)
-//   bram_mem[] — dedicated to MEM reads (port B of instance 1)
-// Both instances are written identically whenever a store commits.
-//
-// This pattern reliably produces RAMB36E1 primitives in Vivado.
+// Two logical views of the memory are provided:
+//   bram[]     — instruction fetch view
+//   bram_mem[] — data-memory view
+// Request-stage stores update both views so a store followed by a load can
+// observe the new value without waiting for the later committed-store pulse.
 
 module risky_bram_mem_adapter #(
     parameter logic [63:0] RAM_BASE  = 64'h0000_0000_8000_0000,
@@ -28,6 +21,8 @@ module risky_bram_mem_adapter #(
     input  wire        mem_req_valid_i,
     input  wire [63:0] mem_req_addr_i,
     input  wire        mem_req_write_i,
+    input  wire [63:0] mem_req_wdata_i,
+    input  wire [2:0]  mem_req_width_i,
     input  wire        mem_store_valid_i,
     input  wire [63:0] mem_store_addr_i,
     input  wire [63:0] mem_store_word_i,
@@ -42,8 +37,8 @@ module risky_bram_mem_adapter #(
     //   bram_if[]  : port B used for instruction-fetch reads
     //   bram_mem[] : port B used for data-memory reads
     // -------------------------------------------------------------------------
-    (* ram_style = "block" *) reg [63:0] bram     [0:RAM_WORDS-1];
-    (* ram_style = "block" *) reg [63:0] bram_mem [0:RAM_WORDS-1];
+    (* ram_style = "distributed" *) reg [63:0] bram     [0:RAM_WORDS-1];
+    (* ram_style = "distributed" *) reg [63:0] bram_mem [0:RAM_WORDS-1];
 
     // ---- Initialise both arrays from the generated init header ----
     integer _i;
@@ -69,9 +64,39 @@ module risky_bram_mem_adapter #(
     wire [RAM_ADDR_W-1:0] mem_word_idx = mem_offset[RAM_ADDR_W+2:3];
     wire                 mem_in_ram   = (mem_offset >> 3) < RAM_WORDS_64;
 
-    wire [63:0]          sto_offset    = mem_store_addr_i - RAM_BASE;
-    wire [RAM_ADDR_W-1:0] sto_word_idx = sto_offset[RAM_ADDR_W+2:3];
-    wire                 sto_in_ram   = (sto_offset >> 3) < RAM_WORDS_64;
+    wire                 req_store_in_ram = mem_req_valid_i && mem_req_write_i && mem_in_ram;
+    wire                 _unused_committed_store =
+        mem_store_valid_i || |mem_store_addr_i || |mem_store_word_i;
+
+    function automatic [63:0] store_mask;
+        input [2:0] width;
+        input [2:0] byte_off;
+        reg [63:0] byte_en;
+        begin
+            case (width)
+                3'd0: byte_en = 64'h0000_0000_0000_00ff;
+                3'd1: byte_en = 64'h0000_0000_0000_ffff;
+                3'd2: byte_en = 64'h0000_0000_ffff_ffff;
+                3'd3: byte_en = 64'hffff_ffff_ffff_ffff;
+                default: byte_en = 64'hffff_ffff_ffff_ffff;
+            endcase
+            store_mask = byte_en << (byte_off * 8);
+        end
+    endfunction
+
+    function automatic [63:0] merge_store;
+        input [63:0] old_word;
+        input [63:0] store_data;
+        input [2:0]  width;
+        input [2:0]  byte_off;
+        reg [63:0] mask;
+        reg [63:0] shifted_data;
+        begin
+            mask = store_mask(width, byte_off);
+            shifted_data = store_data << (byte_off * 8);
+            merge_store = (old_word & ~mask) | (shifted_data & mask);
+        end
+    endfunction
 
     // =========================================================================
     // Read data (Asynchronous for Anvil 0-cycle requirement)
@@ -85,9 +110,19 @@ module risky_bram_mem_adapter #(
     wire [63:0] mem_word  = bram_mem[mem_word_idx];
 
     always @(posedge clk_i) begin
-        if (sto_in_ram && mem_store_valid_i) begin
-            bram[sto_word_idx] <= mem_store_word_i;
-            bram_mem[sto_word_idx] <= mem_store_word_i;
+        if (req_store_in_ram) begin
+            bram[mem_word_idx] <= merge_store(
+                bram[mem_word_idx],
+                mem_req_wdata_i,
+                mem_req_width_i,
+                mem_req_addr_i[2:0]
+            );
+            bram_mem[mem_word_idx] <= merge_store(
+                bram_mem[mem_word_idx],
+                mem_req_wdata_i,
+                mem_req_width_i,
+                mem_req_addr_i[2:0]
+            );
         end
     end
 
