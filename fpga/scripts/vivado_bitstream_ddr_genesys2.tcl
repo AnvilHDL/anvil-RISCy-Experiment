@@ -68,13 +68,16 @@ if {![file exists $cdc_xci]} {
   puts "AXI Clock Converter IP already exists at $cdc_xci"
 }
 read_ip $cdc_xci
-# Explicitly read CDC IP synthesis sources (same pattern as MIG above).
-# read_ip alone does not add the generated HDL to synth_design's file list.
-set cdc_dir "$build_dir/project/ip/axi_clock_converter_0"
-read_verilog "$cdc_dir/synth/axi_clock_converter_0.v"
-read_verilog "$cdc_dir/hdl/axi_clock_converter_v2_1_vl_rfs.v"
-read_verilog "$cdc_dir/hdl/axi_infrastructure_v1_1_vl_rfs.v"
-read_verilog "$cdc_dir/hdl/fifo_generator_v13_2_rfs.v"
+# The IP uses encrypted FIFO sources (fifo_generator_v13_2) that cannot be
+# read_verilog'd directly.  Run OOC synthesis to produce a DCP; synth_design
+# will pick it up automatically.  Skip if the DCP already exists (incremental).
+set cdc_dcp "$build_dir/project/ip/axi_clock_converter_0/axi_clock_converter_0.dcp"
+if {![file exists $cdc_dcp]} {
+  puts "Running OOC synthesis for axi_clock_converter_0..."
+  synth_ip [get_ips axi_clock_converter_0]
+} else {
+  puts "axi_clock_converter_0 DCP already exists, skipping OOC synthesis"
+}
 
 # ---- RTL sources ----
 set rtl_dir "$root_dir/build/fpga/rtl"
