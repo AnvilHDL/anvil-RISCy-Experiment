@@ -7,8 +7,8 @@
 //   0x10000000                UART NS16550
 //
 // Clock architecture:
-//   clk_core  = 25 MHz  from MMCME2_BASE (200 MHz ÷ 8 via IBUFDS + MMCM)
-//   ui_clk    ≈ 200 MHz from MIG (DDR3-1600 controller clock)
+//   ui_clk    ≈ 200 MHz from MIG (DDR3-1600 controller clock; MIG owns IBUFDS on sys_clk_p/n)
+//   clk_core  = 25 MHz  from MMCME2_BASE driven by ui_clk (200 MHz ÷ 8; VCO=1000 MHz)
 //   axi_clock_converter_0 bridges core AXI (25 MHz) to MIG AXI (ui_clk)
 //
 // Memory stall contract:
@@ -48,23 +48,12 @@ module risky_genesys2_ddr_top (
     localparam int UART_FIFO_DEPTH = 64;
 
     // =========================================================================
-    // 25 MHz core clock from MMCM (matches BRAM target frequency)
-    // MIG takes sys_clk_p/n differentially; we tap the same pins via IBUFDS
-    // for our MMCM — Vivado routes both to the same differential buffer.
+    // MIG owns the IBUFDS on sys_clk_p/n (clk200_p/n).  Its ui_clk output
+    // (≈200 MHz) feeds our MMCM to produce the 25 MHz core clock.
     // =========================================================================
-    wire clk200;
+    wire ui_clk;               // driven by MIG below; declared early for MMCM
     wire clk_core;
     wire core_clk_locked;
-
-    IBUFDS #(
-        .DIFF_TERM   ("FALSE"),
-        .IBUF_LOW_PWR("TRUE"),
-        .IOSTANDARD  ("LVDS")
-    ) i_sysclk_ibufds (
-        .I (clk200_p),
-        .IB(clk200_n),
-        .O (clk200)
-    );
 
     wire clkfb_mmcm, clkfb_bufg, clk_core_mmcm;
     wire clkout0b_unused, clkout1_unused, clkout1b_unused;
@@ -75,14 +64,14 @@ module risky_genesys2_ddr_top (
 
     MMCME2_BASE #(
         .BANDWIDTH         ("OPTIMIZED"),
-        .CLKIN1_PERIOD     (5.000),    // 200 MHz
+        .CLKIN1_PERIOD     (5.000),    // ui_clk ≈ 200 MHz → 5 ns
         .CLKFBOUT_MULT_F   (5.000),    // VCO = 1000 MHz
         .DIVCLK_DIVIDE     (1),
         .CLKOUT0_DIVIDE_F  (40.000),   // 25 MHz
         .CLKOUT0_DUTY_CYCLE(0.500),
         .STARTUP_WAIT      ("FALSE")
     ) i_coreclk_mmcm (
-        .CLKIN1   (clk200),
+        .CLKIN1   (ui_clk),
         .CLKFBIN  (clkfb_bufg),
         .RST      (!cpu_resetn),
         .PWRDWN   (1'b0),
@@ -110,7 +99,7 @@ module risky_genesys2_ddr_top (
     // All core-side logic runs in clk_core domain (25 MHz); an
     // axi_clock_converter_0 bridges the two domains below.
     // =========================================================================
-    wire ui_clk;
+
     wire mig_ui_clk_sync_rst;
     wire mig_mmcm_locked;
     wire mig_init_calib_complete;
