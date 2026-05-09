@@ -1810,6 +1810,17 @@ int main(int argc, char** argv) {
         update_sv39(top->rootp);
         pre_populate_mem_rdata(top->rootp);
         pre_populate_imem_rdata(top->rootp);
+        // Early-cycle debug: trace first 20 ticks.
+        if (ticks < 20u) {
+            std::fprintf(stderr,
+                "[EARLY cyc=%u] pc=0x%llx instr=0x%08x mtvec=0x%llx mcause=0x%llx priv=%u\n",
+                ticks,
+                (unsigned long long)top->rootp->pipeline_core__DOT__pc_q_q,
+                (unsigned)top->rootp->pipeline_core__DOT__imem_rdata_q_q,
+                (unsigned long long)read_mtvec(top->rootp),
+                (unsigned long long)read_mcause(top->rootp),
+                read_priv(top->rootp));
+        }
         // Capture mem PA and rdata BEFORE tick (they're set by pre_populate_mem_rdata).
         const std::uint64_t pre_tick_mem_pa =
             top->rootp->pipeline_core__DOT__sv39_mem_valid_q_q
