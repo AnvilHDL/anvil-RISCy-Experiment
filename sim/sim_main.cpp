@@ -1723,7 +1723,7 @@ int main(int argc, char** argv) {
 
     const std::unique_ptr<VerilatedContext> contextp{new VerilatedContext};
     contextp->debug(0);
-    contextp->randReset(2);
+    contextp->randReset(0);  // zero-init: randReset(2) changed behaviour in Verilator 5.036
     contextp->traceEverOn(false);
     contextp->commandArgs(argc, argv);
 
