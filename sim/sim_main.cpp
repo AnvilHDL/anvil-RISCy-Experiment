@@ -1757,6 +1757,10 @@ int main(int argc, char** argv) {
 
     cap_rf_reset();
 
+    std::fprintf(stderr, "[POSTBOOT] pc_q_q=0x%llx booted=%u\n",
+        (unsigned long long)top->rootp->pipeline_core__DOT__pc_q_q,
+        (unsigned)top->rootp->pipeline_core__DOT__booted_q_q);
+
     if (!elf_path.empty()) {
         if (!load_elf(top->rootp, elf_path)) {
             top->final();
