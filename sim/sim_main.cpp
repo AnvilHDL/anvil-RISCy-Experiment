@@ -52,6 +52,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -97,6 +98,20 @@ static bool uart_tx_irq_pending = false;
 static std::uint64_t uart_tx_irq_fire_at = UINT64_MAX;  // cycle at which to set pending
 static constexpr std::uint64_t UART_TX_IRQ_DELAY = 50;
 static bool verbose_logs = false;
+
+// UART RX state: bytes waiting to be read by xv6 via uartgetc().
+static std::deque<std::uint8_t> uart_rx_buf;
+static bool uart_rx_irq_pending = false;
+
+// Automated test mode: inject a shell command after boot and exit on pattern match.
+static std::string run_cmd_str;
+static bool        run_cmd_injected = false;
+static std::string pass_pattern;
+static std::string fail_pattern;
+static bool        test_passed = false;
+static bool        test_failed = false;
+// Rolling tail of UART TX output (last 8 KB) for pattern matching.
+static std::string uart_output_tail;
 
 static constexpr std::uint64_t VIRTIO_BASE = 0x10001000ULL;
 static constexpr std::uint64_t BUF_DATA_OFFSET = 0x58;  // offsetof(buf, data)
@@ -736,6 +751,31 @@ static void dispatch_mmio_store(std::uint64_t addr, std::uint64_t data) {
             std::putchar(static_cast<unsigned char>(byte_val));
             std::fflush(stdout);
             uart_tx_irq_fire_at = sim_mtime + UART_TX_IRQ_DELAY;
+            // Pattern matching and command injection: only active when flags were given.
+            if (!run_cmd_str.empty() || !pass_pattern.empty() || !fail_pattern.empty()) {
+                uart_output_tail += static_cast<char>(byte_val);
+                if (uart_output_tail.size() > 8192u)
+                    uart_output_tail.erase(0, uart_output_tail.size() - 8192u);
+                if (!pass_pattern.empty() && uart_output_tail.find(pass_pattern) != std::string::npos)
+                    test_passed = true;
+                if (!fail_pattern.empty() && uart_output_tail.find(fail_pattern) != std::string::npos)
+                    test_failed = true;
+                // Inject run_cmd once the shell prompt "$ " has been printed.
+                if (!run_cmd_str.empty() && !run_cmd_injected) {
+                    const std::size_t n = uart_output_tail.size();
+                    if (n >= 2 &&
+                        uart_output_tail[n - 2u] == '$' &&
+                        uart_output_tail[n - 1u] == ' ') {
+                        for (char c : run_cmd_str)
+                            uart_rx_buf.push_back(static_cast<std::uint8_t>(c));
+                        uart_rx_buf.push_back('\n');
+                        uart_rx_irq_pending = true;
+                        run_cmd_injected = true;
+                        std::fprintf(stderr, "[AUTO-CMD cyc=%llu] injecting: %s\n",
+                                     (unsigned long long)sim_mtime, run_cmd_str.c_str());
+                    }
+                }
+            }
         }
     }
     // PLIC: no-op
@@ -809,7 +849,20 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
             // byte-offset shift extracts the right value.
             const unsigned byte_off = static_cast<unsigned>(pa & 7u);
             std::uint8_t uart_byte = 0;
-            if ((pa & 0xFu) == 5u) uart_byte = 0x60u;  // LSR: THRE+TEMT set
+            if ((pa & 0xFu) == 5u) {
+                uart_byte = 0x60u;  // LSR: THRE+TEMT (TX always ready)
+                if (!uart_rx_buf.empty()) uart_byte |= 0x01u;  // DR: RX data ready
+            } else if ((pa & 0xFu) == 0u && !uart_rx_buf.empty()) {
+                // RBR: dequeue one byte for xv6's uartgetc().
+                uart_byte = uart_rx_buf.front();
+                uart_rx_buf.pop_front();
+                if (uart_rx_buf.empty()) uart_rx_irq_pending = false;
+                if (verbose_logs)
+                    std::fprintf(stderr, "[UART-RX cyc=%llu] dequeued 0x%02x '%c' remaining=%zu\n",
+                        (unsigned long long)sim_mtime, uart_byte,
+                        (uart_byte >= 32u && uart_byte < 127u) ? (char)uart_byte : '.',
+                        uart_rx_buf.size());
+            }
             data = static_cast<std::uint64_t>(uart_byte) << (byte_off * 8u);
             // Log LSR reads so we can trace uartstart().
             if (verbose_logs && (pa & 0xFu) == 5u)
@@ -823,7 +876,17 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
             // Only dispatch claim on LOAD (ex_r=1). A store to PLIC_SPRIORITY (0x0C201000)
             // must not trigger the claim — the 8-byte-aligned range would otherwise match.
             if (ex_r && (pa & ~3ull) == (PLIC_SCLAIM0 & ~3ull)) {
-                if (uart_tx_irq_pending) {
+                if (uart_rx_irq_pending && !uart_tx_irq_pending) {
+                    // RX interrupt: let xv6's uartintr() run normally — it calls
+                    // uartgetc() which will read from uart_rx_buf via the RBR path above.
+                    rval = 10u;  // UART0_IRQ = 10
+                    uart_rx_irq_pending = false;
+                    std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART RX IRQ=10 claimed"
+                                 " fetch_pc=0x%llx priv=%u rx_remaining=%zu\n",
+                                 (unsigned long long)sim_mtime,
+                                 (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
+                                 read_priv(rootp), uart_rx_buf.size());
+                } else if (uart_tx_irq_pending) {
                     rval = 10u;  // UART0_IRQ = 10 (handled first — lower latency than virtio)
                     uart_tx_irq_pending = false;
                     std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART IRQ=10 claimed"
@@ -1390,8 +1453,8 @@ void update_ext_mip(Vtop___024root* rootp) {
             (unsigned long long)mie,
             (unsigned long long)rootp->pipeline_core__DOT__mip_q_q);
     }
-    // SEIP (bit 9): S-mode external interrupt — virtio I/O or UART TX-empty.
-    if (virtio_irq_pending || uart_tx_irq_pending) ext_mip |= (1ULL << 9);
+    // SEIP (bit 9): S-mode external interrupt — virtio I/O, UART TX-empty, or UART RX-ready.
+    if (virtio_irq_pending || uart_tx_irq_pending || uart_rx_irq_pending) ext_mip |= (1ULL << 9);
     rootp->pipeline_core__DOT__ext_mip_q_q = ext_mip;
 }
 
@@ -1621,6 +1684,12 @@ int main(int argc, char** argv) {
             verbose_logs = true;
         } else if (std::string(argv[i]) == "--disk" && i + 1 < argc) {
             disk_path = argv[++i];
+        } else if (std::string(argv[i]) == "--run-cmd" && i + 1 < argc) {
+            run_cmd_str = argv[++i];
+        } else if (std::string(argv[i]) == "--pass-pat" && i + 1 < argc) {
+            pass_pattern = argv[++i];
+        } else if (std::string(argv[i]) == "--fail-pat" && i + 1 < argc) {
+            fail_pattern = argv[++i];
         } else if (is_number_arg(argv[i])) {
             timeout = static_cast<unsigned>(std::strtoul(argv[i], nullptr, 10));
         } else if (elf_path.empty()) {
@@ -1891,6 +1960,17 @@ int main(int argc, char** argv) {
             }
             prev_exit_seen = cur_exit_seen;
         }
+        // Exit early when a pass or fail pattern has been matched in UART output.
+        if (test_passed) {
+            std::fprintf(stderr, "[TEST-PASS cyc=%llu] matched: %s\n",
+                         (unsigned long long)ticks, pass_pattern.c_str());
+            break;
+        }
+        if (test_failed) {
+            std::fprintf(stderr, "[TEST-FAIL cyc=%llu] matched: %s\n",
+                         (unsigned long long)ticks, fail_pattern.c_str());
+            break;
+        }
     }
 
     if (!elf_path.empty()) {
@@ -1920,5 +2000,8 @@ int main(int argc, char** argv) {
     summary << "[BOOT CYCLES] " << boot_ticks << "\n";
     summary << "[EXEC CYCLES] " << (ticks - boot_ticks) << "\n";
     summary << "[TOTAL CYCLES] " << ticks << "\n";
+    // In test mode (pass/fail patterns given), return based on pattern match.
+    if (!pass_pattern.empty() || !fail_pattern.empty())
+        return test_passed ? 0 : 1;
     return (contextp->gotFinish() || program_exited) ? 0 : 1;
 }
