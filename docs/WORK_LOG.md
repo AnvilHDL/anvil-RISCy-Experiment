@@ -31,9 +31,9 @@ the instructions as written:
 - `scripts/check_fpga_boundary.sh` called `rg` unconditionally, so
   `verify_all.sh` failed for anyone without ripgrep.
 
-`scripts/toolchain/install_anvil.sh` and
-`scripts/toolchain/install_riscv_toolchain.sh` now install both under
-`.toolchain/` without root, and the boundary check falls back to `grep`.
+`scripts/toolchain/install_riscv_toolchain.sh` installs the RISC-V toolchain
+under `.toolchain/` without root, and the boundary check falls back to `grep`.
+Anvil is expected to be supplied by the caller via `ANVIL_BIN`.
 
 ### Defect 1: Anvil literal evaluation (fixed here, upstream unfixed)
 
@@ -56,12 +56,13 @@ the effects are broad:
 - Indices whose reversal stays in range (12 -> 21, 13 -> 31) are silently
   wrong rather than caught by the bounds check.
 
-Fixed by folding from the right, in
-`third_party/anvil-patches/0001-fix-literal_eval-digit-order.patch`. Anvil's
-own typechecking and simulation suites pass with it applied. The patch has not
-been sent upstream.
+Fixed by folding from the right. This landed upstream as Anvil commit
+`8432f2b` ("fix literal eval"), together with regression tests in
+`examples/edge_cases/literal_index.anvil` and
+`examples/should_pass/literal-index-bounds.anvil`, so this repository no
+longer carries a patch. Build against Anvil `8432f2b` or later.
 
-With the patch the register file, forwarding, arithmetic, CSR read/write and
+With the fix the register file, forwarding, arithmetic, CSR read/write and
 the `a7 == 93` simulator-exit path all behave correctly.
 
 ### Defect 2: pipeline wedged permanently (fixed)
@@ -154,9 +155,13 @@ XV6_CYCLE_LIMIT=400000000 XV6_HOST_TIMEOUT=900s scripts/run_xv6_smoke.sh
 
 Stock xv6 does not run as shipped: it targets `rv64gc` with the `lp64d` ABI,
 and this core implements RV64IMA with Zicsr/Zifencei, no compressed
-instructions and no floating point. `scripts/toolchain/build_xv6.sh` clones
-xv6 and applies `third_party/xv6-patches/`, which sets the ISA and ABI,
-`NCPU = 1`, and `PHYSTOP = 0x80800000`.
+instructions and no floating point. xv6 is vendored as a submodule at
+`third_party/xv6-riscv`, and `scripts/toolchain/build_xv6.sh` builds it out of
+tree into `.toolchain/xv6-build` with the ISA and ABI set to
+`rv64ima_zicsr_zifencei` / `lp64`, `NCPU = 1`, and `PHYSTOP = 0x80800000`. The
+submodule's working tree is left untouched.
+
+`scripts/run_xv6.sh` wraps the whole sequence in one command.
 
 ## Current implementation boundary
 

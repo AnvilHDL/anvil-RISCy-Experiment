@@ -1,34 +1,25 @@
 #!/usr/bin/env bash
-# Fetch and build xv6-riscv so it can boot on this core.
+# Build the xv6-riscv submodule for this core.
 #
-# Stock xv6 targets rv64gc with the lp64d ABI. This core implements RV64IMA
-# with Zicsr/Zifencei and no compressed instructions or floating point, so the
-# kernel must be rebuilt for that ISA. The patch in
-# third_party/xv6-patches/ makes the three required changes:
-#
-#   - build for rv64ima_zicsr_zifencei with -mabi=lp64
-#   - NCPU = 1
-#   - PHYSTOP = 0x80800000 (the simulator provides 8 MiB of RAM)
-#
-# Prints the kernel ELF and fs.img paths on success.
+# Stock xv6 targets rv64gc with the lp64d ABI; this core is RV64IMA with
+# Zicsr/Zifencei, no compressed instructions and no floating point. The
+# overrides below supply the ISA, ABI, NCPU and PHYSTOP this core needs
+# without modifying the submodule's working tree.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SRC_DIR="$ROOT/third_party/xv6-riscv"
 : "${TOOLCHAIN_PREFIX:="$ROOT/.toolchain"}"
-: "${XV6_REPO:=https://github.com/mit-pdos/xv6-riscv.git}"
-: "${XV6_REF:=riscv}"
-: "${XV6_SKIP_PATCHES:=0}"
-PATCH_DIR="$ROOT/third_party/xv6-patches"
-SRC_DIR="$TOOLCHAIN_PREFIX/xv6-riscv"
+: "${XV6_MARCH:=rv64ima_zicsr_zifencei}"
+: "${XV6_MABI:=lp64}"
+: "${XV6_PHYSTOP:=0x80800000L}"
 
-for tool in git make; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "[xv6] required tool not found: $tool" >&2
-    exit 1
-  fi
-done
+if [ ! -f "$SRC_DIR/Makefile" ]; then
+  echo "[xv6] submodule not checked out; run: git submodule update --init third_party/xv6-riscv" >&2
+  exit 1
+fi
 
-# The bundled RISC-V toolchain takes precedence when it is installed.
+# Prefer the bundled RISC-V toolchain when it is installed.
 if [ -x "$TOOLCHAIN_PREFIX/riscv/bin/riscv64-unknown-elf-gcc" ]; then
   PATH="$TOOLCHAIN_PREFIX/riscv/bin:$PATH"
   export PATH
@@ -38,38 +29,23 @@ if ! command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$TOOLCHAIN_PREFIX"
+# The submodule stays pristine: copy it to a scratch tree and patch that.
+BUILD_DIR="$TOOLCHAIN_PREFIX/xv6-build"
+rm -rf "$BUILD_DIR"
+mkdir -p "$(dirname "$BUILD_DIR")"
+cp -a "$SRC_DIR" "$BUILD_DIR"
+rm -rf "$BUILD_DIR/.git"
 
-if [ -d "$SRC_DIR/.git" ]; then
-  echo "[xv6] updating existing checkout" >&2
-  git -C "$SRC_DIR" fetch --depth 1 origin "$XV6_REF"
-else
-  echo "[xv6] cloning $XV6_REPO ($XV6_REF)" >&2
-  rm -rf "$SRC_DIR"
-  git clone --depth 1 --branch "$XV6_REF" "$XV6_REPO" "$SRC_DIR"
-fi
+make -C "$BUILD_DIR" clean >/dev/null 2>&1 || true
 
-git -C "$SRC_DIR" checkout -q --detach FETCH_HEAD 2>/dev/null || \
-  git -C "$SRC_DIR" checkout -q --detach "origin/$XV6_REF"
-git -C "$SRC_DIR" reset -q --hard
-git -C "$SRC_DIR" clean -qfdx
+sed -i "s|-march=rv64gc|-march=$XV6_MARCH -mabi=$XV6_MABI|g" "$BUILD_DIR/Makefile"
+sed -i "s|^#define NCPU .*|#define NCPU        1|" "$BUILD_DIR/kernel/param.h"
+sed -i "s|^#define PHYSTOP .*|#define PHYSTOP  $XV6_PHYSTOP|" "$BUILD_DIR/kernel/memlayout.h"
 
-echo "[xv6] upstream at $(git -C "$SRC_DIR" rev-parse --short HEAD)" >&2
+make -C "$BUILD_DIR" kernel/kernel fs.img >&2
 
-if [ "$XV6_SKIP_PATCHES" != "1" ] && [ -d "$PATCH_DIR" ]; then
-  shopt -s nullglob
-  for patch in "$PATCH_DIR"/*.patch; do
-    echo "[xv6] applying $(basename "$patch")" >&2
-    git -C "$SRC_DIR" apply "$patch"
-  done
-  shopt -u nullglob
-fi
-
-echo "[xv6] building kernel and fs.img" >&2
-make -C "$SRC_DIR" kernel/kernel fs.img >&2
-
-KERNEL="$SRC_DIR/kernel/kernel"
-FS_IMG="$SRC_DIR/fs.img"
+KERNEL="$BUILD_DIR/kernel/kernel"
+FS_IMG="$BUILD_DIR/fs.img"
 for artefact in "$KERNEL" "$FS_IMG"; do
   if [ ! -r "$artefact" ]; then
     echo "[xv6] build did not produce $artefact" >&2
@@ -77,7 +53,5 @@ for artefact in "$KERNEL" "$FS_IMG"; do
   fi
 done
 
-echo "[xv6] kernel: $KERNEL" >&2
-echo "[xv6] fs.img: $FS_IMG" >&2
 echo "XV6_KERNEL=$KERNEL"
 echo "XV6_FS_IMG=$FS_IMG"

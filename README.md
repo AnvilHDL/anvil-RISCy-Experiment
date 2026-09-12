@@ -15,42 +15,28 @@ development and do not yet provide every service used by the simulator.
 C++ programs, the lint and FPGA export checks, and the xv6 smoke test, which
 boots to a shell prompt.
 
-Two things are needed to reproduce that, both automated by
-`scripts/toolchain/`:
+Anvil upstream `master` needs commit `8432f2b` ("fix literal eval") or later;
+before it, sized literals evaluate with their digits reversed and the core
+does not execute correctly.
 
-- Anvil upstream `master` mis-evaluates sized literals, which corrupts
-  constant array indices and generated enum constants. The fix is in
-  [third_party/anvil-patches/](third_party/anvil-patches/).
-- Stock xv6 targets `rv64gc`, which this RV64IMA core does not implement. The
-  ISA, ABI, `NCPU` and `PHYSTOP` changes are in
-  [third_party/xv6-patches/](third_party/xv6-patches/).
+Stock xv6 targets `rv64gc`, which this RV64IMA core does not implement.
+`scripts/toolchain/build_xv6.sh` rebuilds it for the right ISA.
 
 See [the work log](docs/WORK_LOG.md) for both, and for the pipeline defect
 that was fixed to get here.
 
 ## Requirements
 
-- OCaml with opam, and the Anvil build dependencies (`menhir`, `yojson`,
-  `dune`), to build the Anvil compiler
+- The Anvil compiler, available as `anvil` in `PATH` or selected with
+  `ANVIL_BIN` (upstream `master` at `8432f2b` or later)
 - Verilator 4.2 or newer
 - GNU Make
 - Vivado with Kintex-7 support for FPGA synthesis and programming
 
-`scripts/toolchain/` provides the two toolchains that are not usually present
-on a clean machine, installing both under `.toolchain/` without root:
+A RISC-V bare-metal toolchain is installed under `.toolchain/` without root:
 
 ```bash
-# Build Anvil from upstream master with the required patch applied.
-scripts/toolchain/install_anvil.sh
-
-# Install a prebuilt riscv64 bare-metal GCC.
 scripts/toolchain/install_riscv_toolchain.sh
-```
-
-Then point the build at them:
-
-```bash
-export ANVIL_BIN="$PWD/.toolchain/anvil/_build/default/bin/main.exe"
 export PATH="$PWD/.toolchain/riscv/bin:$PATH"
 ```
 
@@ -81,31 +67,25 @@ Set `ANVIL_VMEM_MB=0` to disable the memory limit.
 
 ### xv6
 
-Build a kernel and filesystem image that this core can run:
+One command, from a clean checkout to a booted shell:
 
 ```bash
-scripts/toolchain/build_xv6.sh
+scripts/run_xv6.sh
 ```
 
-That clones xv6-riscv into `.toolchain/` and applies
-[third_party/xv6-patches/](third_party/xv6-patches/), which builds for
-`rv64ima_zicsr_zifencei` with `-mabi=lp64` (this core has no compressed
-instructions and no floating point) and sets `NCPU=1` and
-`PHYSTOP=0x80800000`.
+It checks out the xv6 submodule, installs the RISC-V toolchain, builds xv6 for
+this core's ISA, builds the simulator, and boots — skipping any step already
+done. Add `-i` to stay attached to the shell instead of stopping at the
+prompt.
 
-Then boot it:
+Stock xv6 targets `rv64gc` with the `lp64d` ABI, which this core cannot
+execute; `scripts/toolchain/build_xv6.sh` rebuilds it for
+`rv64ima_zicsr_zifencei` with `-mabi=lp64` and sets `NCPU=1` and
+`PHYSTOP=0x80800000`. It builds out of tree into `.toolchain/xv6-build`, so
+the submodule's working tree is left untouched.
 
-```bash
-XV6_KERNEL="$PWD/.toolchain/xv6-riscv/kernel/kernel" \
-XV6_FS_IMG="$PWD/.toolchain/xv6-riscv/fs.img" \
-XV6_CYCLE_LIMIT=400000000 \
-XV6_HOST_TIMEOUT=900s \
-scripts/run_xv6_smoke.sh
-```
-
-Boot reaches the shell prompt at roughly 81 M cycles, so the default
-`XV6_CYCLE_LIMIT` of 30 M is not enough — it stops partway through `kinit`.
-The console output is:
+Boot reaches the shell prompt at roughly 81 M cycles, which takes a few
+minutes of wall clock. The console output is:
 
 ```
 xv6 kernel is booting
@@ -114,10 +94,21 @@ init: starting sh
 $
 ```
 
-To include it in the full run, pass the same variables to
-`RUN_XV6=1 scripts/verify_all.sh`, plus `VERIFY_XV6_TIMEOUT=950s` — that
-governs the outer wrapper, while `XV6_HOST_TIMEOUT` governs the simulator
-itself, and both must exceed the boot time.
+To include xv6 in the full verification run:
+
+```bash
+RUN_XV6=1 \
+XV6_KERNEL="$PWD/.toolchain/xv6-build/kernel/kernel" \
+XV6_FS_IMG="$PWD/.toolchain/xv6-build/fs.img" \
+XV6_CYCLE_LIMIT=400000000 \
+XV6_HOST_TIMEOUT=900s \
+VERIFY_XV6_TIMEOUT=950s \
+scripts/verify_all.sh
+```
+
+`XV6_CYCLE_LIMIT` defaults to 30 M, which stops partway through `kinit`.
+`XV6_HOST_TIMEOUT` bounds the simulator and `VERIFY_XV6_TIMEOUT` the wrapper
+around it; both must exceed the boot time.
 
 ## Architecture
 
