@@ -114,8 +114,10 @@ init: starting sh
 $
 ```
 
-The same variables work with `RUN_XV6=1 scripts/verify_all.sh` to include the
-smoke test in the full run.
+To include it in the full run, pass the same variables to
+`RUN_XV6=1 scripts/verify_all.sh`, plus `VERIFY_XV6_TIMEOUT=950s` — that
+governs the outer wrapper, while `XV6_HOST_TIMEOUT` governs the simulator
+itself, and both must exceed the boot time.
 
 ## Architecture
 

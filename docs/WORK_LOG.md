@@ -217,7 +217,8 @@ RUN_XV6=1 \
 XV6_KERNEL="$PWD/.toolchain/xv6-riscv/kernel/kernel" \
 XV6_FS_IMG="$PWD/.toolchain/xv6-riscv/fs.img" \
 XV6_CYCLE_LIMIT=400000000 \
-VERIFY_XV6_TIMEOUT=900s \
+XV6_HOST_TIMEOUT=900s \
+VERIFY_XV6_TIMEOUT=950s \
 scripts/verify_all.sh
 ```
 
