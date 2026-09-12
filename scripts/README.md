@@ -1,65 +1,61 @@
-# scripts/ — Build and Test Scripts
+# scripts/
 
-The scripts use the active shell environment. Put Anvil in `PATH` or set
-`ANVIL_BIN` to its executable; no machine-specific opam switch is selected.
+Build, test and export entry points. Scripts use the active shell environment:
+put the Anvil compiler in `PATH` or set `ANVIL_BIN` to its executable.
+
+## Top-level entry points
 
 | Script | Purpose |
-|--------|---------|
-| `build.sh` | Core build: Anvil → SystemVerilog → Verilator → binary |
-| `build_program_sim.sh` | Rebuild the ELF-loading simulator (calls `build.sh`) |
-| `export_fpga_rtl.sh` | Bounded Anvil-only RTL export for FPGA flows |
-| `export_fpga_bram_rtl.sh` | Export a BRAM-backed bare-metal Genesys 2 target without adding memories to Anvil |
-| `compile_program.sh` | Compile a single `.cpp` file to a RISC-V ELF for testing |
-| `run_riscv_tests.sh` | Compile and run all ISA assembly tests |
-| `run_program_tests.sh` | Compile and run all freestanding C++ program tests |
-| `run_program.sh` | Compile and run a single C++ program test |
-| `run_program_trace.sh` | Like `run_program.sh` but with pipeline trace output |
-| `lint_generated_sv.sh` | Verilator lint for generated SystemVerilog |
-| `lint_fpga_rtl.sh` | Export and lint the Genesys 2 FPGA RTL wrapper/core |
-| `lint_fpga_bram_rtl.sh` | Export and lint the BRAM-backed Genesys 2 wrapper/core |
-| `../fpga/scripts/run_vivado_bram_bitstream.sh` | Run Vivado implementation and write the BRAM target bitstream |
-| `../fpga/scripts/program_bram_bitstream.sh` | Program a locally attached Genesys 2 with the BRAM bitstream |
-| `run_xv6_smoke.sh` | Boot xv6 with explicit kernel/fs image paths and stop once the shell prompt appears |
-| `check_fpga_boundary.sh` | Ensure simulation-backed services are documented and stale harness patches stay removed |
-| `verify_all.sh` | Guarded build plus ISA and C++ regressions |
+| --- | --- |
+| `run_xv6.sh` | Boot xv6, from a clean checkout, in one command. Initialises the submodule, installs the RISC-V toolchain, builds xv6 and the simulator, then boots. Takes about 7 minutes to reach the shell prompt. `-i` stays attached to the shell. |
+| `verify_all.sh` | Full check: shell syntax, FPGA boundary, simulator build, ISA and C++ regressions, SystemVerilog lint, FPGA exports. Adds the xv6 boot when `RUN_XV6=1`. |
 
-## Typical workflow
+## Build
 
-```bash
-# 1. After changing any .anvil file: full rebuild (~5 min due to Verilator)
-scripts/build_program_sim.sh
+| Script | Purpose |
+| --- | --- |
+| `build.sh` | Compile one `.anvil` file to SystemVerilog, then to a Verilator binary. Takes the source path and optional top module. |
+| `build_program_sim.sh` | Rebuild the ELF-loading simulator from `src/core/top/pipeline_core.anvil`. Wraps `build.sh`. |
+| `compile_program.sh` | Compile one C++ file to a freestanding RISC-V ELF. |
 
-# 2. Verify correctness
-scripts/verify_all.sh
+## Test
 
-# 3. Debug a failing test with trace
-build/pipeline_core_program/obj_dir/Vpipeline_core tests/isa/csr.elf 10000 2>&1 | less
-```
+| Script | Purpose |
+| --- | --- |
+| `run_riscv_tests.sh` | Compile and run every ISA test in `tests/isa/`. |
+| `run_program_tests.sh` | Compile and run every C++ program in `tests/programs/`. |
+| `run_program.sh` | Compile and run a single C++ program. |
+| `run_program_trace.sh` | As `run_program.sh`, with pipeline trace output. |
+| `run_xv6_smoke.sh` | Boot xv6 from explicit `XV6_KERNEL` and `XV6_FS_IMG` paths and stop at the shell prompt. Called by `run_xv6.sh`. |
+
+## Lint and FPGA export
+
+| Script | Purpose |
+| --- | --- |
+| `lint_generated_sv.sh` | Verilator lint of the generated SystemVerilog. |
+| `export_fpga_rtl.sh` | Export the core's RTL for the Genesys 2 synthesis target. |
+| `export_fpga_bram_rtl.sh` | Export the BRAM-backed bring-up target. |
+| `export_fpga_ddr_rtl.sh` | Export the DDR3/MIG integration target. |
+| `lint_fpga_rtl.sh` | Export then lint the FPGA wrapper and core. |
+| `lint_fpga_bram_rtl.sh` | Export then lint the BRAM target. |
+| `gen_fpga_bram_init.py` | Generate BRAM initialisation data from a program image. |
+| `check_fpga_boundary.sh` | Check that services the harness supplies stay documented in `docs/WORK_LOG.md`. |
+
+## toolchain/
+
+| Script | Purpose |
+| --- | --- |
+| `install_riscv_toolchain.sh` | Install a prebuilt `riscv64-unknown-elf` GCC into `.toolchain/`, no root required. |
+| `build_xv6.sh` | Build the xv6 submodule for this core's ISA, out of tree into `.toolchain/xv6-build`. |
 
 ## Environment variables
 
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `ANVIL_BIN` | `anvil` | Anvil command or executable path |
-| `ANVIL_FLAGS` | (auto) | Extra flags passed to Anvil (`-O 0 -disable-lt-checks` for pipeline_core) |
-| `BUILD_NAME` | top module name | Output directory name under `build/` |
-| `SIM_MAIN` | `sim/sim_main.cpp` | Harness source file for the Verilator driver |
-| `SIM_BIN` | (built by `build_program_sim.sh`) | Path to the simulator binary for test scripts |
-| `ANVIL_VMEM_MB` | `12288` | Virtual-memory cap for the Anvil compiler; set `0` to disable |
-| `ANVIL_TIMEOUT` | `20m` | Host timeout for Anvil compilation |
-| `FPGA_OUT_DIR` | `build/fpga/rtl` | Output directory for FPGA RTL export |
-| `VERILATOR_TIMEOUT` | `30m` | Host timeout for Verilator C++ generation |
-| `MAKE_TIMEOUT` | `30m` | Host timeout for the generated simulator build |
-| `TEST_COMPILE_TIMEOUT` | `30s` | Per-ISA-test compile timeout |
-| `TEST_RUN_TIMEOUT` | `30s` | Per-ISA-test simulator timeout |
-| `HOST_TIMEOUT` | `120s` | Host timeout for `run_program*.sh` simulator runs |
-| `SIM_CYCLE_LIMIT` | `100000` | Default cycle limit used by `run_program_tests.sh` |
-| `VERIFY_BUILD_TIMEOUT` | `20m` | Overall build timeout used by `verify_all.sh` |
-| `VERIFY_TEST_TIMEOUT` | `5m` | Overall timeout for each regression phase in `verify_all.sh` |
-| `RUN_XV6` | `0` | Set to `1` to include xv6 smoke in `verify_all.sh` |
-| `XV6_KERNEL` | (required for xv6) | Path to xv6-riscv `kernel/kernel` ELF |
-| `XV6_FS_IMG` | (required for xv6) | Path to xv6-riscv `fs.img` |
-| `XV6_CYCLE_LIMIT` | `30000000` | Simulator cycle budget for xv6 smoke |
-| `XV6_HOST_TIMEOUT` | `180s` | Host timeout for xv6 smoke |
-| `LINT_TIMEOUT` | `2m` | Host timeout for generated SystemVerilog lint |
-| `FPGA_LINT_TIMEOUT` | `3m` | Host timeout for FPGA wrapper/core lint |
+| Variable | Applies to | Default |
+| --- | --- | --- |
+| `ANVIL_BIN` | all builds | `anvil` from `PATH` |
+| `ANVIL_VMEM_MB` | `build.sh` | `12288`; `0` disables the limit |
+| `ANVIL_TIMEOUT` | `build.sh` | `20m` |
+| `XV6_CYCLE_LIMIT` | xv6 boot | `2000000000` in `run_xv6.sh` |
+| `XV6_HOST_TIMEOUT` | xv6 boot | `0` (no wall-clock limit) in `run_xv6.sh` |
+| `XV6_EXPECTED_BOOT_SECS` | `run_xv6.sh` | `400`; scales the progress bar only |
+| `RUN_XV6` | `verify_all.sh` | unset; set to `1` to include the xv6 boot |

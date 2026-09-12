@@ -11,9 +11,9 @@
 #   4. build the Verilator simulator from the Anvil sources
 #   5. boot
 #
-# Simulation runs at roughly 200k cycles/s, and the boot needs on the order of
-# 10^8 cycles, so expect several minutes. XV6_CYCLE_LIMIT bounds the run in
-# simulated cycles and XV6_HOST_TIMEOUT in wall clock (0 disables it).
+# Reaching the shell prompt takes about 7 minutes (measured 396 s on a desktop
+# x86-64). XV6_CYCLE_LIMIT bounds the run in simulated cycles and
+# XV6_HOST_TIMEOUT in wall clock (0 disables it).
 #
 # ANVIL_BIN selects the Anvil compiler; it defaults to `anvil` on PATH.
 set -euo pipefail
@@ -22,6 +22,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 : "${ANVIL_BIN:=anvil}"
 : "${XV6_CYCLE_LIMIT:=2000000000}"
 : "${XV6_HOST_TIMEOUT:=0}"
+: "${XV6_EXPECTED_BOOT_SECS:=400}"   # measured ~396s; scales the progress bar only
 INTERACTIVE=0
 [ "${1:-}" = "-i" ] && INTERACTIVE=1
 
@@ -76,11 +77,19 @@ XV6_BOOT_LOG="$LOG" \
   "$ROOT/scripts/run_xv6_smoke.sh" &
 smoke_pid=$!
 
-# The smoke test logs to a file, so report elapsed time until it finishes.
+# The smoke test logs to a file, so draw a progress bar against the expected
+# boot time until it finishes.
 started=$SECONDS
+bar_width=40
 while kill -0 "$smoke_pid" 2>/dev/null; do
-  sleep 15
-  kill -0 "$smoke_pid" 2>/dev/null || break
-  printf '[run-xv6] booting, %ds elapsed\n' "$((SECONDS - started))" >&2
+  elapsed=$((SECONDS - started))
+  pct=$((elapsed * 100 / XV6_EXPECTED_BOOT_SECS))
+  [ "$pct" -gt 99 ] && pct=99
+  filled=$((pct * bar_width / 100))
+  bar="$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$((bar_width - filled))" '')"
+  printf '\r[run-xv6] booting [%s] %3d%%  %dm%02ds' "$bar" "$pct" "$((elapsed / 60))" "$((elapsed % 60))" >&2
+  sleep 2
 done
+printf '\r[run-xv6] booting [%s] 100%%  %dm%02ds\n' "$(printf '%*s' "$bar_width" '' | tr ' ' '#')" \
+  "$(((SECONDS - started) / 60))" "$(((SECONDS - started) % 60))" >&2
 wait "$smoke_pid"
