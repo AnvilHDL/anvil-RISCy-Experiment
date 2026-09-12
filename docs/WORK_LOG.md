@@ -101,15 +101,40 @@ program retires in ~79 cycles. Insert one `nop` and it wedges. Traced:
 
 MUL is unaffected.
 
-**Common shape.** In the wedged state none of the documented stall sources is
-asserted: `div_busy_q == 0`, `sv39_stall_q == 0`, and the MEM/WB packet has no
-exception, so `pipeline_stall` is false, yet no pipeline register updates.
-The register-file write event is gated on `wb_fire`
-(`valid && !has_exc && reg_write && rd != 0 && !int_fire && !pipeline_stall`),
-and the generated SystemVerilog for that condition matches the Anvil source.
-This points at a core stall/handshake defect rather than a codegen fault.
-Both triggers reproduce with the patched compiler, so both are independent of
-defect 1.
+**Root cause: the generated event loop deadlocks on a join.**
+
+The wedge is not a pipeline-logic condition. In the wedged state none of the
+documented stall sources is asserted (`div_busy_q == 0`, `sv39_stall_q == 0`,
+`mip == mie == 0` so `int_fire` is false, and the MEM/WB packet carries no
+exception), so `pipeline_stall` and `wb_fire` both evaluate the way a retiring
+instruction needs. Nothing updates anyway, because the Anvil thread has
+stopped scheduling.
+
+Probing the generated event machinery through the wedge:
+
+```
+[T 14] ... ev125=1 ev128=0 ev132=0    join130=0
+[T 15] ... ev125=0 ev128=0 ev132=0    join130=1   <- thread stops here
+[T 16] ... ev125=0 ev128=0 ev132=0    join130=1
+```
+
+The loop closes through
+`EVENTS0[0] <- EVENTS0[133] <- EVENTS0[132] | EVENTS0[130]`, where 132 is the
+boot arm, so steady state depends entirely on `EVENTS0[130]`. That is a join
+of `EVENTS0[129]` and `EVENTS0[125]`, tracked by `_thread_0_event_reg_130_q`.
+At T15 the register latches to 1 — the `EVENTS0[129]` side arrived — and the
+`EVENTS0[125]` side never does. The join never completes, `EVENTS0[133]` never
+fires, and every pipeline register holds its value indefinitely.
+
+`EVENTS0[125]` is fed from `EVENTS0[124]`, the branch carrying the divider and
+CSR register updates, and `EVENTS0[127]`/`EVENTS0[126]` (the register-file
+write arm and its complement) are gated on `wb_fire`. Both triggers therefore
+land on the same structural problem: a control path through the `cycle` body
+that lets one arm of the join retire without the other.
+
+Whether this is a defect in Anvil's scheduling or in how `pipeline_core.anvil`
+structures its conditional `set`s is the open question. It reproduces with the
+patched compiler, so it is independent of defect 1.
 
 ### Current test results
 
