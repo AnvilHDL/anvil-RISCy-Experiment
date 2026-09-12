@@ -35,3 +35,6 @@ Vpipeline_core
 CLAUDE.md
 AGENTS.md
 TASK.md
+
+# Locally installed toolchains (scripts/toolchain/)
+.toolchain/
