@@ -11,13 +11,17 @@
 #   4. build the Verilator simulator from the Anvil sources
 #   5. boot
 #
+# Simulation runs at roughly 200k cycles/s, and the boot needs on the order of
+# 10^8 cycles, so expect several minutes. XV6_CYCLE_LIMIT bounds the run in
+# simulated cycles and XV6_HOST_TIMEOUT in wall clock (0 disables it).
+#
 # ANVIL_BIN selects the Anvil compiler; it defaults to `anvil` on PATH.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 : "${ANVIL_BIN:=anvil}"
-: "${XV6_CYCLE_LIMIT:=400000000}"
-: "${XV6_HOST_TIMEOUT:=900s}"
+: "${XV6_CYCLE_LIMIT:=2000000000}"
+: "${XV6_HOST_TIMEOUT:=0}"
 INTERACTIVE=0
 [ "${1:-}" = "-i" ] && INTERACTIVE=1
 
@@ -64,7 +68,19 @@ if [ "$INTERACTIVE" = "1" ]; then
   exec "$SIM" "$KERNEL" "$XV6_CYCLE_LIMIT" --disk "$FS_IMG"
 fi
 
-step "booting (stops at the shell prompt)"
+step "booting (stops at the shell prompt; expect several minutes)"
+LOG="$ROOT/build/xv6_smoke.log"
 XV6_KERNEL="$KERNEL" XV6_FS_IMG="$FS_IMG" \
 XV6_CYCLE_LIMIT="$XV6_CYCLE_LIMIT" XV6_HOST_TIMEOUT="$XV6_HOST_TIMEOUT" \
-  "$ROOT/scripts/run_xv6_smoke.sh"
+XV6_BOOT_LOG="$LOG" \
+  "$ROOT/scripts/run_xv6_smoke.sh" &
+smoke_pid=$!
+
+# The smoke test logs to a file, so report elapsed time until it finishes.
+started=$SECONDS
+while kill -0 "$smoke_pid" 2>/dev/null; do
+  sleep 15
+  kill -0 "$smoke_pid" 2>/dev/null || break
+  printf '[run-xv6] booting, %ds elapsed\n' "$((SECONDS - started))" >&2
+done
+wait "$smoke_pid"

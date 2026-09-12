@@ -426,7 +426,7 @@ static bool sv39_debug = false;
 // Log PTW activity for the trampoline VA range (0x3FFFFFFF000-0x3FFFFFFF FFF).
 #define SV39_TRAMP_DBG(fmt, ...) do { \
     const std::uint64_t _va_check = sv39_ptw_va; \
-    if ((_va_check >> 12) == 0x3FFFFFFull) \
+    if (verbose_logs && (_va_check >> 12) == 0x3FFFFFFull) \
         std::fprintf(stderr, "[PTW-TRAMP cyc=%llu] " fmt "\n", \
             (unsigned long long)read_mcycle(rootp), ##__VA_ARGS__); \
 } while(0)
@@ -435,15 +435,17 @@ static bool sv39_debug = false;
 static inline void sv39_write_if_traced(Vtop___024root* rootp, bool valid, std::uint64_t pa, bool pf, const char* reason) {
     const std::uint64_t _pc = rootp->pipeline_core__DOT__pc_q_q;
     if (!valid && (_pc >> 12) == 0x3FFFFFFull) {
-        std::fprintf(stderr,
-            "[SV39-IF-CLEAR cyc=%llu] pc=0x%llx reason=%s ptw_run=%d ptw_va=0x%llx "
-            "ptw_exec=%d flush=%u satp=0x%llx\n",
-            (unsigned long long)read_mcycle(rootp),
-            (unsigned long long)_pc, reason,
-            (int)sv39_ptw_running, (unsigned long long)sv39_ptw_va,
-            (int)sv39_ptw_is_exec,
-            (unsigned)rootp->pipeline_core__DOT__sv39_flush_q_q,
-            (unsigned long long)rootp->pipeline_core__DOT__satp_q_q);
+        if (verbose_logs) {
+            std::fprintf(stderr,
+                "[SV39-IF-CLEAR cyc=%llu] pc=0x%llx reason=%s ptw_run=%d ptw_va=0x%llx "
+                "ptw_exec=%d flush=%u satp=0x%llx\n",
+                (unsigned long long)read_mcycle(rootp),
+                (unsigned long long)_pc, reason,
+                (int)sv39_ptw_running, (unsigned long long)sv39_ptw_va,
+                (int)sv39_ptw_is_exec,
+                (unsigned)rootp->pipeline_core__DOT__sv39_flush_q_q,
+                (unsigned long long)rootp->pipeline_core__DOT__satp_q_q);
+        }
     }
     sv39_write_if(rootp, valid, pa, pf);
 }
@@ -505,11 +507,13 @@ void update_sv39(Vtop___024root* rootp) {
 
         // Unconditional trampoline PTW trace.
         if ((sv39_ptw_va >> 12) == 0x3FFFFFFull) {
-            std::fprintf(stderr,
-                "[PTW-TRAMP-PTE cyc=%llu] state=%d pte_pa=0x%llx pte=0x%llx v=%d r=%d w=%d x=%d leaf=%d ppn=0x%llx\n",
-                (unsigned long long)read_mcycle(rootp), sv39_ptw_state,
-                (unsigned long long)pa, (unsigned long long)pte,
-                (int)v, (int)r, (int)w, (int)x, (int)is_leaf, (unsigned long long)ppn);
+            if (verbose_logs) {
+                std::fprintf(stderr,
+                    "[PTW-TRAMP-PTE cyc=%llu] state=%d pte_pa=0x%llx pte=0x%llx v=%d r=%d w=%d x=%d leaf=%d ppn=0x%llx\n",
+                    (unsigned long long)read_mcycle(rootp), sv39_ptw_state,
+                    (unsigned long long)pa, (unsigned long long)pte,
+                    (int)v, (int)r, (int)w, (int)x, (int)is_leaf, (unsigned long long)ppn);
+            }
         }
 
         bool fault = !v
@@ -523,14 +527,16 @@ void update_sv39(Vtop___024root* rootp) {
 
         if (fault) {
             if ((sv39_ptw_va >> 12) == 0x3FFFFFFull) {
-                std::fprintf(stderr,
-                    "[PTW-TRAMP-FAULT cyc=%llu] va=0x%llx state=%d pte_pa=0x%llx pte=0x%llx reason=%s\n",
-                    (unsigned long long)read_mcycle(rootp),
-                    (unsigned long long)sv39_ptw_va, sv39_ptw_state,
-                    (unsigned long long)pa, (unsigned long long)pte,
-                    !v ? "not-valid" : (!is_leaf && sv39_ptw_state==3) ? "not-leaf-at-L0"
-                       : (sv39_ptw_is_exec && !x) ? "no-exec"
-                       : (sv39_ptw_is_store && !w) ? "no-write" : "no-read");
+                if (verbose_logs) {
+                    std::fprintf(stderr,
+                        "[PTW-TRAMP-FAULT cyc=%llu] va=0x%llx state=%d pte_pa=0x%llx pte=0x%llx reason=%s\n",
+                        (unsigned long long)read_mcycle(rootp),
+                        (unsigned long long)sv39_ptw_va, sv39_ptw_state,
+                        (unsigned long long)pa, (unsigned long long)pte,
+                        !v ? "not-valid" : (!is_leaf && sv39_ptw_state==3) ? "not-leaf-at-L0"
+                           : (sv39_ptw_is_exec && !x) ? "no-exec"
+                           : (sv39_ptw_is_store && !w) ? "no-write" : "no-read");
+                }
             }
             sv39_ptw_running = false;
             sv39_ptw_state   = 0;
@@ -561,13 +567,15 @@ void update_sv39(Vtop___024root* rootp) {
             // on the same tick stall is cleared (no 1-cycle window with VA).
             const std::uint64_t xlat_pa = (ppn << 12) | (sv39_ptw_va & 0xFFFu);
             if ((sv39_ptw_va >> 12) == 0x3FFFFFFull) {
-                std::fprintf(stderr,
-                    "[PTW-TRAMP-OK cyc=%llu] va=0x%llx pa=0x%llx ppn=0x%llx exec=%d\n",
-                    (unsigned long long)read_mcycle(rootp),
-                    (unsigned long long)sv39_ptw_va,
-                    (unsigned long long)xlat_pa,
-                    (unsigned long long)ppn,
-                    (int)sv39_ptw_is_exec);
+                if (verbose_logs) {
+                    std::fprintf(stderr,
+                        "[PTW-TRAMP-OK cyc=%llu] va=0x%llx pa=0x%llx ppn=0x%llx exec=%d\n",
+                        (unsigned long long)read_mcycle(rootp),
+                        (unsigned long long)sv39_ptw_va,
+                        (unsigned long long)xlat_pa,
+                        (unsigned long long)ppn,
+                        (int)sv39_ptw_is_exec);
+                }
             }
             if (sv39_ptw_is_exec) {
                 // IF PTW complete. If a chained data result is pending, restore it.
@@ -604,12 +612,14 @@ void update_sv39(Vtop___024root* rootp) {
                     sv39_ptw_pte_addr = (ppn_root << 12) | (static_cast<std::uint64_t>(vpn2_if) << 3);
                     rootp->pipeline_core__DOT__sv39_stall_q_q = 1u;  // keep stalled
                     if ((if_va2 >> 12) == 0x3FFFFFFull) {
-                        std::fprintf(stderr,
-                            "[PTW-TRAMP-CHAIN cyc=%llu] data_pa=0x%llx if_va=0x%llx satp=0x%llx\n",
-                            (unsigned long long)read_mcycle(rootp),
-                            (unsigned long long)xlat_pa,
-                            (unsigned long long)if_va2,
-                            (unsigned long long)satp);
+                        if (verbose_logs) {
+                            std::fprintf(stderr,
+                                "[PTW-TRAMP-CHAIN cyc=%llu] data_pa=0x%llx if_va=0x%llx satp=0x%llx\n",
+                                (unsigned long long)read_mcycle(rootp),
+                                (unsigned long long)xlat_pa,
+                                (unsigned long long)if_va2,
+                                (unsigned long long)satp);
+                        }
                     }
                 }
             }
@@ -683,14 +693,16 @@ void update_sv39(Vtop___024root* rootp) {
         const std::uint32_t vpn2 = static_cast<std::uint32_t>((sv39_ptw_va >> 30) & 0x1FFu);
         sv39_ptw_pte_addr = (ppn_root << 12) | (static_cast<std::uint64_t>(vpn2) << 3);
         if ((sv39_ptw_va >> 12) == 0x3FFFFFFull) {
-            std::fprintf(stderr,
-                "[PTW-TRAMP-START cyc=%llu] va=0x%llx satp=0x%llx priv=%u exec=%d "
-                "ppn_root=0x%llx vpn2=0x%x pte_addr=0x%llx\n",
-                (unsigned long long)read_mcycle(rootp),
-                (unsigned long long)sv39_ptw_va,
-                (unsigned long long)satp, priv, (int)sv39_ptw_is_exec,
-                (unsigned long long)ppn_root, vpn2,
-                (unsigned long long)sv39_ptw_pte_addr);
+            if (verbose_logs) {
+                std::fprintf(stderr,
+                    "[PTW-TRAMP-START cyc=%llu] va=0x%llx satp=0x%llx priv=%u exec=%d "
+                    "ppn_root=0x%llx vpn2=0x%x pte_addr=0x%llx\n",
+                    (unsigned long long)read_mcycle(rootp),
+                    (unsigned long long)sv39_ptw_va,
+                    (unsigned long long)satp, priv, (int)sv39_ptw_is_exec,
+                    (unsigned long long)ppn_root, vpn2,
+                    (unsigned long long)sv39_ptw_pte_addr);
+            }
         }
         rootp->pipeline_core__DOT__sv39_stall_q_q = 1u;
         // When data PTW takes priority, preserve instruction TLB hit (if any)
@@ -881,20 +893,24 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
                     // uartgetc() which will read from uart_rx_buf via the RBR path above.
                     rval = 10u;  // UART0_IRQ = 10
                     uart_rx_irq_pending = false;
-                    std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART RX IRQ=10 claimed"
-                                 " fetch_pc=0x%llx priv=%u rx_remaining=%zu\n",
-                                 (unsigned long long)sim_mtime,
-                                 (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
-                                 read_priv(rootp), uart_rx_buf.size());
+                    if (verbose_logs) {
+                        std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART RX IRQ=10 claimed"
+                                     " fetch_pc=0x%llx priv=%u rx_remaining=%zu\n",
+                                     (unsigned long long)sim_mtime,
+                                     (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
+                                     read_priv(rootp), uart_rx_buf.size());
+                    }
                 } else if (uart_tx_irq_pending) {
                     rval = 10u;  // UART0_IRQ = 10 (handled first — lower latency than virtio)
                     uart_tx_irq_pending = false;
-                    std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART IRQ=10 claimed"
-                                 " fetch_pc=0x%llx ex_alu=0x%llx priv=%u\n",
-                                 (unsigned long long)sim_mtime,
-                                 (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
-                                 (unsigned long long)read_ex_alu(rootp),
-                                 read_priv(rootp));
+                    if (verbose_logs) {
+                        std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] UART IRQ=10 claimed"
+                                     " fetch_pc=0x%llx ex_alu=0x%llx priv=%u\n",
+                                     (unsigned long long)sim_mtime,
+                                     (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
+                                     (unsigned long long)read_ex_alu(rootp),
+                                     read_priv(rootp));
+                    }
                     // Harness-level uartintr() simulation: the kernel's interrupt handler
                     // may not reliably execute uartintr() due to pipeline timing quirks.
                     // Directly simulate the wakeup effect: clear tx_busy, wake any proc
@@ -950,21 +966,25 @@ static void pre_populate_mem_rdata(Vtop___024root* rootp) {
                             if (state == 2u && chan == TX_CHAN_ADDR) {  // SLEEPING on tx_chan
                                 hm_write_u32(proc_addr + PROC_STATE_OFF, 3u);  // RUNNABLE
                                 hm_write_u64(proc_addr + PROC_CHAN_OFF, 0u);   // chan = nil
-                                std::fprintf(stderr,
-                                    "[UART-WAKEUP cyc=%llu] proc[%u] SLEEPING→RUNNABLE (tx_chan)\n",
-                                    (unsigned long long)sim_mtime, pi);
+                                if (verbose_logs) {
+                                    std::fprintf(stderr,
+                                        "[UART-WAKEUP cyc=%llu] proc[%u] SLEEPING→RUNNABLE (tx_chan)\n",
+                                        (unsigned long long)sim_mtime, pi);
+                                }
                             }
                         }
                     }
                 } else if (virtio_irq_pending) {
                     rval = 1u;  // VIRTIO0_IRQ = 1
                     virtio_irq_pending = false;
-                    std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] VIRTIO IRQ=1 claimed"
-                                 " fetch_pc=0x%llx ex_alu=0x%llx priv=%u\n",
-                                 (unsigned long long)sim_mtime,
-                                 (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
-                                 (unsigned long long)read_ex_alu(rootp),
-                                 read_priv(rootp));
+                    if (verbose_logs) {
+                        std::fprintf(stderr, "[PLIC-CLAIM cyc=%llu] VIRTIO IRQ=1 claimed"
+                                     " fetch_pc=0x%llx ex_alu=0x%llx priv=%u\n",
+                                     (unsigned long long)sim_mtime,
+                                     (unsigned long long)rootp->pipeline_core__DOT__pc_q_q,
+                                     (unsigned long long)read_ex_alu(rootp),
+                                     read_priv(rootp));
+                    }
                 }
             }
             data = static_cast<std::uint64_t>(rval) << (byte_off * 8u);
@@ -995,13 +1015,15 @@ static void pre_populate_imem_rdata(Vtop___024root* rootp) {
             instr |= static_cast<std::uint32_t>(host_mem[local + i]) << (i * 8u);
     }
     if (tramp_fetch && instr == 0) {
-        std::fprintf(stderr,
-            "[IMEM-ZERO cyc=%llu] tramp_va=0x%llx sv39_valid=%u if_pa=0x%llx used_pa=0x%llx instr=0\n",
-            (unsigned long long)read_mcycle(rootp),
-            (unsigned long long)fetch_va,
-            (unsigned)rootp->pipeline_core__DOT__sv39_if_valid_q_q,
-            (unsigned long long)rootp->pipeline_core__DOT__sv39_if_pa_q_q,
-            (unsigned long long)pa);
+        if (verbose_logs) {
+            std::fprintf(stderr,
+                "[IMEM-ZERO cyc=%llu] tramp_va=0x%llx sv39_valid=%u if_pa=0x%llx used_pa=0x%llx instr=0\n",
+                (unsigned long long)read_mcycle(rootp),
+                (unsigned long long)fetch_va,
+                (unsigned)rootp->pipeline_core__DOT__sv39_if_valid_q_q,
+                (unsigned long long)rootp->pipeline_core__DOT__sv39_if_pa_q_q,
+                (unsigned long long)pa);
+        }
     }
     rootp->pipeline_core__DOT__imem_rdata_q_q = instr;
 }
@@ -1446,12 +1468,14 @@ void update_ext_mip(Vtop___024root* rootp) {
         const std::uint64_t mie  = rootp->pipeline_core__DOT__mie_q_q;
         const std::uint32_t priv = read_priv(rootp);
         const std::uint64_t mst  = read_mstatus(rootp);
-        std::fprintf(stderr,
-            "[UART-TX-IRQ-PROMOTE cyc=%llu] priv=%u SIE=%u mie=0x%llx mip_before=0x%llx\n",
-            (unsigned long long)sim_mtime, priv,
-            (unsigned)(( mst >> 1u) & 1u),
-            (unsigned long long)mie,
-            (unsigned long long)rootp->pipeline_core__DOT__mip_q_q);
+        if (verbose_logs) {
+            std::fprintf(stderr,
+                "[UART-TX-IRQ-PROMOTE cyc=%llu] priv=%u SIE=%u mie=0x%llx mip_before=0x%llx\n",
+                (unsigned long long)sim_mtime, priv,
+                (unsigned)(( mst >> 1u) & 1u),
+                (unsigned long long)mie,
+                (unsigned long long)rootp->pipeline_core__DOT__mip_q_q);
+        }
     }
     // SEIP (bit 9): S-mode external interrupt — virtio I/O, UART TX-empty, or UART RX-ready.
     if (virtio_irq_pending || uart_tx_irq_pending || uart_rx_irq_pending) ext_mip |= (1ULL << 9);
@@ -1491,14 +1515,16 @@ static void print_s_trap_diag(const Vtop___024root* rootp, std::uint64_t cycle) 
     const std::uint64_t mideleg = rootp->pipeline_core__DOT__mideleg_q_q;
     const std::uint64_t mip    = rootp->pipeline_core__DOT__mip_q_q;
     const std::uint64_t ext    = rootp->pipeline_core__DOT__ext_mip_q_q;
-    std::fprintf(stderr,
-        "[STRAP cyc=%llu] scause=0x%llx sepc=0x%llx stval=0x%llx "
-        "stvec=0x%llx mstatus=0x%llx mideleg=0x%llx mip=0x%llx ext_mip=0x%llx\n",
-        (unsigned long long)cycle,
-        (unsigned long long)scause, (unsigned long long)sepc,
-        (unsigned long long)stval,  (unsigned long long)stvec,
-        (unsigned long long)mstatus,(unsigned long long)mideleg,
-        (unsigned long long)mip,    (unsigned long long)ext);
+    if (verbose_logs) {
+        std::fprintf(stderr,
+            "[STRAP cyc=%llu] scause=0x%llx sepc=0x%llx stval=0x%llx "
+            "stvec=0x%llx mstatus=0x%llx mideleg=0x%llx mip=0x%llx ext_mip=0x%llx\n",
+            (unsigned long long)cycle,
+            (unsigned long long)scause, (unsigned long long)sepc,
+            (unsigned long long)stval,  (unsigned long long)stvec,
+            (unsigned long long)mstatus,(unsigned long long)mideleg,
+            (unsigned long long)mip,    (unsigned long long)ext);
+    }
 }
 
 // Legacy wrapper kept for main loop call site.
@@ -1811,7 +1837,7 @@ int main(int argc, char** argv) {
         pre_populate_mem_rdata(top->rootp);
         pre_populate_imem_rdata(top->rootp);
         // Early-cycle debug: trace first 20 ticks.
-        if (ticks < 20u) {
+        if (verbose_logs && ticks < 20u) {
             std::fprintf(stderr,
                 "[EARLY cyc=%u] pc=0x%llx instr=0x%08x mtvec=0x%llx mcause=0x%llx priv=%u\n",
                 ticks,
@@ -1880,22 +1906,26 @@ int main(int argc, char** argv) {
                     auto read_reg = [&](int n) -> std::uint64_t {
                         return static_cast<std::uint64_t>(rf[n*2]) | (static_cast<std::uint64_t>(rf[n*2+1]) << 32);
                     };
-                    std::fprintf(stderr,
-                        "[SYSCALL cyc=%llu] sepc=0x%llx a7=%llu a0=0x%llx a1=0x%llx a2=0x%llx\n",
-                        (unsigned long long)sim_mtime,
-                        (unsigned long long)cur_sepc,
-                        (unsigned long long)read_reg(17),
-                        (unsigned long long)read_reg(10),
-                        (unsigned long long)read_reg(11),
-                        (unsigned long long)read_reg(12));
+                    if (verbose_logs) {
+                        std::fprintf(stderr,
+                            "[SYSCALL cyc=%llu] sepc=0x%llx a7=%llu a0=0x%llx a1=0x%llx a2=0x%llx\n",
+                            (unsigned long long)sim_mtime,
+                            (unsigned long long)cur_sepc,
+                            (unsigned long long)read_reg(17),
+                            (unsigned long long)read_reg(10),
+                            (unsigned long long)read_reg(11),
+                            (unsigned long long)read_reg(12));
+                    }
                 }
-                std::fprintf(stderr,
-                    "[PRIV-CHANGE cyc=%llu] %u→%u pc=0x%llx sepc=0x%llx scause=0x%llx\n",
-                    (unsigned long long)sim_mtime,
-                    prev_priv_for_transitions, cur_priv,
-                    (unsigned long long)cur_pc,
-                    (unsigned long long)cur_sepc,
-                    (unsigned long long)cur_scause);
+                if (verbose_logs) {
+                    std::fprintf(stderr,
+                        "[PRIV-CHANGE cyc=%llu] %u→%u pc=0x%llx sepc=0x%llx scause=0x%llx\n",
+                        (unsigned long long)sim_mtime,
+                        prev_priv_for_transitions, cur_priv,
+                        (unsigned long long)cur_pc,
+                        (unsigned long long)cur_sepc,
+                        (unsigned long long)cur_scause);
+                }
             }
             prev_priv_for_transitions = cur_priv;
             if (cur_priv == 1u) {
@@ -1937,10 +1967,12 @@ int main(int argc, char** argv) {
                 }
             }
             if (cur_mcause != prev_mcause) {
-                std::fprintf(stderr, "[MTRAP cyc=%llu] mcause=0x%llx priv=%u\n",
-                    (unsigned long long)read_mcycle(top->rootp),
-                    (unsigned long long)cur_mcause,
-                    read_priv(top->rootp));
+                if (verbose_logs) {
+                    std::fprintf(stderr, "[MTRAP cyc=%llu] mcause=0x%llx priv=%u\n",
+                        (unsigned long long)read_mcycle(top->rootp),
+                        (unsigned long long)cur_mcause,
+                        read_priv(top->rootp));
+                }
             }
             prev_scause = cur_scause;
             prev_mcause = cur_mcause;
@@ -1955,14 +1987,16 @@ int main(int argc, char** argv) {
                 read_dmem_qword(top->rootp, 0x8000bb88ULL) & 0xFFFFFFFFu);
             const std::uint32_t p1_pid   = static_cast<std::uint32_t>(
                 read_dmem_qword(top->rootp, 0x8000bba0ULL) & 0xFFFFFFFFu);
-            std::fprintf(stderr,
-                "[HB tick=%llu] pc=0x%llx priv=%u sv39=%d satp=0x%llx proc0_state=%u proc1_state=%u(pid=%u)\n",
-                (unsigned long long)ticks,
-                (unsigned long long)top->rootp->pipeline_core__DOT__pc_q_q,
-                read_priv(top->rootp),
-                (int)((top->rootp->pipeline_core__DOT__satp_q_q >> 60) == 8u),
-                (unsigned long long)top->rootp->pipeline_core__DOT__satp_q_q,
-                p0_state, p1_state, p1_pid);
+            if (verbose_logs) {
+                std::fprintf(stderr,
+                    "[HB tick=%llu] pc=0x%llx priv=%u sv39=%d satp=0x%llx proc0_state=%u proc1_state=%u(pid=%u)\n",
+                    (unsigned long long)ticks,
+                    (unsigned long long)top->rootp->pipeline_core__DOT__pc_q_q,
+                    read_priv(top->rootp),
+                    (int)((top->rootp->pipeline_core__DOT__satp_q_q >> 60) == 8u),
+                    (unsigned long long)top->rootp->pipeline_core__DOT__satp_q_q,
+                    p0_state, p1_state, p1_pid);
+            }
         }
         if (!elf_path.empty() && disk_path.empty()) {
             // Only use sim_exit_valid for bare-metal ISA tests (no disk image).
