@@ -5,18 +5,47 @@ RISCy-Experiment is an experimental five-stage RV64 processor written in
 which can be run with Verilator or integrated into the Genesys 2 FPGA flows in
 this repository.
 
-The Verilator target runs the RISC-V ISA tests, freestanding C++ programs, and
-xv6-riscv. The FPGA targets are under development and do not yet provide every
-service used by the simulator.
+The Verilator target is the development target for the RISC-V ISA tests,
+freestanding C++ programs, and xv6-riscv. The FPGA targets are under
+development and do not yet provide every service used by the simulator.
+
+## Status
+
+The core builds and runs under Verilator, but the simulation regressions do
+**not** currently pass. `scripts/verify_all.sh` fails at the ISA stage. See
+[the work log](docs/WORK_LOG.md) for the open defect (the pipeline wedges
+permanently on any CSR write, and on some DIV/REM sequences) and for what has
+been verified to work.
+
+Anvil upstream `master` also needs a compiler fix before the core executes
+correctly; `scripts/toolchain/install_anvil.sh` applies it. See
+[third_party/anvil-patches/](third_party/anvil-patches/).
 
 ## Requirements
 
-- Anvil from the upstream `master` branch, available as `anvil` in `PATH`
-  or selected with `ANVIL_BIN`
+- OCaml with opam, and the Anvil build dependencies (`menhir`, `yojson`,
+  `dune`), to build the Anvil compiler
 - Verilator 4.2 or newer
 - GNU Make
-- A RISC-V bare-metal C++ compiler, or Clang with the RISC-V target and LLD
 - Vivado with Kintex-7 support for FPGA synthesis and programming
+
+`scripts/toolchain/` provides the two toolchains that are not usually present
+on a clean machine, installing both under `.toolchain/` without root:
+
+```bash
+# Build Anvil from upstream master with the required patch applied.
+scripts/toolchain/install_anvil.sh
+
+# Install a prebuilt riscv64 bare-metal GCC.
+scripts/toolchain/install_riscv_toolchain.sh
+```
+
+Then point the build at them:
+
+```bash
+export ANVIL_BIN="$PWD/.toolchain/anvil/_build/default/bin/main.exe"
+export PATH="$PWD/.toolchain/riscv/bin:$PATH"
+```
 
 ## Build and test
 
@@ -25,6 +54,7 @@ service used by the simulator.
 scripts/build_program_sim.sh
 
 # Run the ISA and freestanding C++ regressions.
+# Currently fails at the ISA stage; see docs/WORK_LOG.md.
 scripts/verify_all.sh
 
 # Run a single ISA test.
@@ -66,10 +96,14 @@ The core implements a five-stage in-order pipeline:
 | MEM | Loads, stores, atomics, alignment, and memory exceptions |
 | WB | Register writeback, retirement, traps, and redirects |
 
-Implemented and regression-tested simulation features include RV64I, RV64M,
-RV64A atomics, M/S/U privilege transitions, traps and interrupts, Sv39, and
-xv6 boot to a shell. Capability instructions are present as an experimental
-extension.
+The core implements RV64I, RV64M, RV64A atomics, M/S/U privilege transitions,
+traps and interrupts, and Sv39. Capability instructions are present as an
+experimental extension.
+
+These are implemented, not currently regression-passing: the ISA and C++
+program suites fail because of the pipeline-wedge defect recorded in the work
+log, and the xv6 boot-to-shell result has not been reproduced since. Treat the
+feature list as the intended scope rather than as a passing test matrix.
 
 The simulation harness currently supplies RAM, the Sv39 page-table walker and
 TLB, MMIO devices, virtio block storage, and part of the capability state.
