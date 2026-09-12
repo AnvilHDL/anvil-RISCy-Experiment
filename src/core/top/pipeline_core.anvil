@@ -479,11 +479,15 @@ proc pipeline_core() {
             let wb_fire = call core_wb_fire(cur_mem_wb) && int_fire == 1'b0 && pipeline_stall == 1'b0 >>
             let wb_data = call wb_value(cur_mem_wb) >>
 
-            if wb_fire == 1'b1 {
-                set regs_q[cur_mem_wb.rd] := wb_data
-            } else {
-                ()
-            };
+            // Write unconditionally and steer suppressed writes at x0, which is
+            // architecturally hardwired to zero and never read back through
+            // regs_q (every reader special-cases index 0). A statement-level
+            // `if` here splits the thread's event graph into two arms that can
+            // retire independently, and the join that recombines them can latch
+            // one side and wait forever for the other, wedging the pipeline.
+            let wb_idx = if wb_fire == 1'b1 { cur_mem_wb.rd } else { <(5'd0)::reg_idx_t> } >>
+            let wb_commit = if wb_fire == 1'b1 { wb_data } else { <(64'd0)::xlen_t> } >>
+            set regs_q[wb_idx] := wb_commit;
 
             // ── MEM: load / store / AMO ───────────────────────────────────────
             // Physical address: harness-translated when Sv39 is active, otherwise

@@ -188,11 +188,11 @@ text = text.replace(
 open(dst, "w", encoding="utf-8").write(text)
 PY
 
-if ! rg -q "= imem_rdata_i;" "$PATCHED_CORE"; then
+if ! grep -qF "= imem_rdata_i;" "$PATCHED_CORE"; then
   echo "[fpga-bram] FATAL: imem_rdata_i patch not applied" >&2
   exit 1
 fi
-if ! rg -q "= mem_rdata_i;" "$PATCHED_CORE"; then
+if ! grep -qF "= mem_rdata_i;" "$PATCHED_CORE"; then
   echo "[fpga-bram] FATAL: mem_rdata_i patch not applied" >&2
   exit 1
 fi
