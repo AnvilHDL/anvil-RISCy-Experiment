@@ -13,7 +13,7 @@
 | Memory exceptions | `misalign_load`, `misalign_store` |
 | Virtual memory | `sv39_basic`, `sv39_pagefault` |
 | Interrupts | `timer_irq` |
-| Capstone scaffold | `cap_*` capability instruction tests |
+| Experimental capabilities | `cap_*` capability instruction tests |
 
 Each test uses the standard RISC-V test environment (`env/riscv_test.h`, `macros/scalar/test_macros.h`).
 A test passes when it writes exit code 0 via `ecall` with `a7 = 93`.

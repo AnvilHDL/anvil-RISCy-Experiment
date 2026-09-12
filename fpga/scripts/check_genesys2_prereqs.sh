@@ -37,8 +37,8 @@ if [ "$fail" -ne 0 ]; then
   cat >&2 <<'EOF'
 [fpga-check] FAILED
 
-Install/source Vivado with Kintex-7 support before running synthesis, for example:
-  source /tools/Xilinx/Vivado/<version>/settings64.sh
+Install Vivado with Kintex-7 support and source its settings64.sh file before
+running synthesis.
 
 Genesys 2 uses a Kintex-7 XC7K325T-2FFG900C device, which may require a
 licensed Vivado installation rather than the free WebPACK flow.

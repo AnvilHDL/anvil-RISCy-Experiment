@@ -55,11 +55,11 @@ func xlen_to_priv(val : xlen_t) {
 }
 
 func mstatus_with_mpp(mstatus : xlen_t, priv : priv_lvl_t) {
-    (mstatus & ~call mstatus_mpp_mask()) | (call priv_to_xlen(priv) << <(64'd11)::xlen_t>)
+    (mstatus & ~call mstatus_mpp_mask()) | (call priv_to_xlen(priv) shl <(64'd11)::xlen_t>)
 }
 
 func mstatus_mpp(mstatus : xlen_t) {
-    call xlen_to_priv(<(#{62'd0, mstatus[11+:2]})::xlen_t>)
+    call xlen_to_priv(<(#flat{62'd0, mstatus[11+:2]})::xlen_t>)
 }
 
 func mstatus_spp(mstatus : xlen_t) {
@@ -203,7 +203,7 @@ func csr_is_readonly(addr : csr_idx_t) {
 }
 
 func csr_instr_zimm(instr : instr_t) {
-    <(#{59'd0, instr[15+:5]})::xlen_t>
+    <(#flat{59'd0, instr[15+:5]})::xlen_t>
 }
 
 func csr_instr_rs1_is_zero(instr : instr_t) {

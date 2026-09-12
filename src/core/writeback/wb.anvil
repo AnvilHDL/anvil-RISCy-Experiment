@@ -1,8 +1,7 @@
 import "../../types/pipeline.anvilh"
 
-// WB is just the final mux.
-// Actual "should we write?" policy is handled outside using the packet's
-// control bits and exception status.
+// Select the writeback value. The caller applies the register-write policy
+// from the packet's control bits and exception status.
 
 func wb_value(pkt : mem_wb_pkt_t) {
     if pkt.ctrl.wb_sel == wb_sel_t::WB_MEM { pkt.mem_data }

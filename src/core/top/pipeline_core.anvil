@@ -23,27 +23,22 @@ import "./packet_utils.anvil"
 //   MEM → commit loads and stores; handle AMOs
 //   WB  → write rd; apply CSR state transitions; redirect PC on traps
 //
-// Key design decisions:
+// Implementation notes:
 //
-//  · S-mode CSRs (stvec, sepc, …) are separate regs, not part of
-//    rv64i_csr_state_t.  Keeping the struct at 10 fields prevents the Anvil
-//    OCaml elaborator from hitting exponential expression-tree growth.
+//  · S-mode CSRs are separate registers rather than fields in
+//    rv64i_csr_state_t to limit struct expansion during elaboration.
 //
-//  · Sv39 page-table walk runs entirely in the C++ harness (sim_main.cpp).
-//    The harness writes translated physical addresses into sv39_*_pa_q before
-//    each clock edge; the RTL just reads those registers.  This avoids the
-//    14 GB peak RSS that an in-RTL PTW FSM would require at elaboration time.
+//  · The simulation harness supplies Sv39 translations through sv39_*_pa_q.
 //
-//  · Interrupts are checked at the START of every cycle (before any
-//    instruction retires).  Timer pending bits are generated in RTL from
+//  · Interrupts are checked before retirement each cycle. Timer pending bits
+//    are generated in RTL from
 //    mtime_q/mtimecmp_q/stimecmp_q; external device pending still comes from
-//    the Verilator MMIO model via ext_mip_q. If int_fire is set, the pipeline is flushed and
-//    the interrupt is taken before the oldest in-flight instruction can commit.
-//    This means the "interrupted" instruction WILL be re-executed after MRET.
+//    the Verilator MMIO model via ext_mip_q. If int_fire is set, the pipeline
+//    is flushed before the oldest in-flight instruction commits, so that
+//    instruction is re-executed after MRET.
 //
 //  · CSR state is updated inline with scalar `>>` wire bindings rather than
-//    calling struct-building functions.  Chaining large struct constructors
-//    through function calls causes the same elaborator blowup as large structs.
+//    calling struct-building functions to limit intermediate expression size.
 // ============================================================
 
 func is_mmio_addr(addr : xlen_t) {
@@ -77,11 +72,11 @@ func mem_align_ok(addr : xlen_t, funct3 : logic[3]) {
 }
 
 func lane_shift_amt(byte_offset : logic[3]) {
-    <(#{58'd0, byte_offset, 3'd0})::xlen_t>
+    <(#flat{58'd0, byte_offset, 3'd0})::xlen_t>
 }
 
 func select_load_lane(mem_word : xlen_t, byte_offset : logic[3]) {
-    call shr_dyn(mem_word, call lane_shift_amt(byte_offset))
+    mem_word shr call lane_shift_amt(byte_offset)
 }
 
 func apply_store_mask(old_word : xlen_t, new_data : xlen_t, funct3 : logic[3], byte_offset : logic[3]) {
@@ -91,8 +86,8 @@ func apply_store_mask(old_word : xlen_t, new_data : xlen_t, funct3 : logic[3], b
         else if funct3 == 3'b001 { <(64'h000000000000ffff)::xlen_t> }
         else if funct3 == 3'b010 { <(64'h00000000ffffffff)::xlen_t> }
         else { <(64'hffffffffffffffff)::xlen_t> };
-    let shifted_mask = call shl_dyn(width_mask, shift);
-    let shifted_data = call shl_dyn(new_data & width_mask, shift);
+    let shifted_mask = width_mask shl shift;
+    let shifted_data = (new_data & width_mask) shl shift;
     (old_word & ~shifted_mask) | shifted_data
 }
 
@@ -102,9 +97,9 @@ func finalize_load_data(mem_word : xlen_t, funct3 : logic[3], byte_offset : logi
     else if funct3 == 3'b001 { call sext16(lane[0+:16]) }
     else if funct3 == 3'b010 { call sext32(lane[0+:32]) }
     else if funct3 == 3'b011 { lane }
-    else if funct3 == 3'b100 { <(#{56'd0, lane[0+:8]})::xlen_t> }
-    else if funct3 == 3'b101 { <(#{48'd0, lane[0+:16]})::xlen_t> }
-    else { <(#{32'd0, lane[0+:32]})::xlen_t> }
+    else if funct3 == 3'b100 { <(#flat{56'd0, lane[0+:8]})::xlen_t> }
+    else if funct3 == 3'b101 { <(#flat{48'd0, lane[0+:16]})::xlen_t> }
+    else { <(#flat{32'd0, lane[0+:32]})::xlen_t> }
 }
 
 func core_wb_fire(pkt : mem_wb_pkt_t) {
@@ -175,7 +170,7 @@ func core_div_eff_operand(op : alu_op_t, val : xlen_t) {
     if op == alu_op_t::ALU_DIVW || op == alu_op_t::ALU_REMW {
         call sext32_result(val[0+:32])
     } else if op == alu_op_t::ALU_DIVUW || op == alu_op_t::ALU_REMUW {
-        <(#{32'd0, val[0+:32]})::xlen_t>
+        <(#flat{32'd0, val[0+:32]})::xlen_t>
     } else {
         val
     }
@@ -187,13 +182,13 @@ func core_abs_if_signed(val : xlen_t, is_signed : logic) {
 }
 
 func core_div_step_q(q : xlen_t, r : xlen_t, b : xlen_t) {
-    let nr = <(#{r[0+:63], q[63+:1]})::xlen_t>;
+    let nr = <(#flat{r[0+:63], q[63+:1]})::xlen_t>;
     let take = call unsigned_ge(nr, b);
-    <(#{q[0+:63], take})::xlen_t>
+    <(#flat{q[0+:63], take})::xlen_t>
 }
 
 func core_div_step_r(q : xlen_t, r : xlen_t, b : xlen_t) {
-    let nr = <(#{r[0+:63], q[63+:1]})::xlen_t>;
+    let nr = <(#flat{r[0+:63], q[63+:1]})::xlen_t>;
     let take = call unsigned_ge(nr, b);
     if take == 1'b1 { nr - b } else { nr }
 }
@@ -547,7 +542,7 @@ proc pipeline_core() {
             let store_live_data =
                 if store_src_idx == 5'd0 { <(64'd0)::xlen_t> }
                 else if wb_fire == 1'b1 && cur_mem_wb.rd == <(store_src_idx)::reg_idx_t> { wb_data }
-                else { call copy(*regs_q[store_src_idx]) } >>
+                else { *regs_q[store_src_idx] } >>
             // AMO: compute new value from old (mem_rdata) and operand (rs2).
             let amo_new_val =
                 if amo_funct5 == 5'b00001 { store_live_data }
@@ -604,7 +599,7 @@ proc pipeline_core() {
             // interrupted instruction is re-executed after MRET.
             // Interrupt delegation: check mideleg before computing next CSR and redirect.
             let int_code    = int_cause_val[0+:6] >>
-            let mideleg_bit = call shr_dyn(cur_mideleg, <(#{58'd0, int_code})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let mideleg_bit = (cur_mideleg shr <(#flat{58'd0, int_code})::xlen_t>) & <(64'd1)::xlen_t> >>
             let int_to_s    = mideleg_bit == <(64'd1)::xlen_t> && priv_is_m == 1'b0 >>
             let csr_wb_input = if pipeline_stall { call bubble_mem_wb() } else if int_fire { call bubble_mem_wb() } else { cur_mem_wb } >>
             // CSR state update: all fields computed inline as scalar wires.
@@ -615,7 +610,7 @@ proc pipeline_core() {
             let csr_val_w    = csr_wb_input.csr_new_val >>
             let trap_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b1 >>
             let exc_cause_wb = csr_wb_input.exc.cause >>
-            let medeleg_exc_bit = call shr_dyn(cur_medeleg, <(#{58'd0, exc_cause_wb})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let medeleg_exc_bit = (cur_medeleg shr <(#flat{58'd0, exc_cause_wb})::xlen_t>) & <(64'd1)::xlen_t> >>
             let trap_del_s   = trap_wb == 1'b1 && cur_priv != priv_lvl_t::PRIV_LVL_M && medeleg_exc_bit == <(64'd1)::xlen_t> >>
             let mret_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 && csr_wb_input.ctrl.is_system == 1'b1 && call is_mret_instr(csr_wb_input.instr) == 1'b1 >>
             let sret_wb      = csr_wb_input.valid == 1'b1 && csr_wb_input.exc.has_exc == 1'b0 && csr_wb_input.ctrl.is_system == 1'b1 && call is_sret_instr(csr_wb_input.instr) == 1'b1 >>
@@ -652,7 +647,7 @@ proc pipeline_core() {
             let next_mcause =
                 if pipeline_stall { cur_csr.mcause }
                 else if int_fire == 1'b1 && int_to_s == 1'b0 { int_cause_val }
-                else if trap_wb == 1'b1 && trap_del_s == 1'b0 { <(#{58'd0, exc_cause_wb})::xlen_t> }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b0 { <(#flat{58'd0, exc_cause_wb})::xlen_t> }
                 else if csr_we_now == 1'b1 && csr_addr_w == call csr_mcause_idx() { csr_val_w }
                 else { cur_csr.mcause } >>
             // mtval
@@ -717,7 +712,7 @@ proc pipeline_core() {
             let next_scause =
                 if pipeline_stall { cur_scause }
                 else if int_fire == 1'b1 && int_to_s == 1'b1 { int_cause_val }
-                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { <(#{58'd0, exc_cause_wb})::xlen_t> }
+                else if trap_wb == 1'b1 && trap_del_s == 1'b1 { <(#flat{58'd0, exc_cause_wb})::xlen_t> }
                 else if csr_we_now == 1'b1 && csr_addr_w == call csr_scause_idx() { csr_val_w }
                 else { cur_scause } >>
             // stval
@@ -880,8 +875,8 @@ proc pipeline_core() {
                     }
                 } >>
 
-            let base_a0 = call copy(*regs_q[10]) >>
-            let base_a7 = call copy(*regs_q[17]) >>
+            let base_a0 = *regs_q[10] >>
+            let base_a7 = *regs_q[17] >>
             let live_a0 = call forward_value(<(5'd10)::reg_idx_t>, base_a0, cur_ex_mem, cur_mem_wb) >>
             let live_a7 = call forward_value(<(5'd17)::reg_idx_t>, base_a7, cur_ex_mem, cur_mem_wb) >>
             let next_sim_exit_valid =
@@ -892,7 +887,7 @@ proc pipeline_core() {
                    live_a7 == <(64'd93)::xlen_t> {
                     1'b1
                 } else {
-                    call copy(*sim_exit_valid_q)
+                    *sim_exit_valid_q
                 } >>
             let next_sim_exit_code =
                 if *sim_exit_valid_q == 1'b0 &&
@@ -902,7 +897,7 @@ proc pipeline_core() {
                    live_a7 == <(64'd93)::xlen_t> {
                     live_a0
                 } else {
-                    call copy(*sim_exit_code_q)
+                    *sim_exit_code_q
                 } >>
 
             // ── ID: decode + register read ────────────────────────────────────
@@ -919,11 +914,11 @@ proc pipeline_core() {
             let dec_rs1_raw =
                 if dec_rs1 == 5'd0 { <(64'd0)::xlen_t> }
                 else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs1)::reg_idx_t> { wb_data }
-                else { call copy(*regs_q[dec_rs1]) } >>
+                else { *regs_q[dec_rs1] } >>
             let dec_rs2_raw =
                 if dec_rs2 == 5'd0 { <(64'd0)::xlen_t> }
                 else if wb_fire == 1'b1 && cur_mem_wb.rd == <(dec_rs2)::reg_idx_t> { wb_data }
-                else { call copy(*regs_q[dec_rs2]) } >>
+                else { *regs_q[dec_rs2] } >>
             let decoded_pkt =
                 id_ex_pkt_t::{
                     valid = cur_if_id.valid;
@@ -988,7 +983,7 @@ proc pipeline_core() {
                 } >>
             // Trap target: check medeleg to decide M vs S trap vector.
             let trap_exc_cause = cur_mem_wb.exc.cause >>
-            let trap_medeleg_bit = call shr_dyn(cur_medeleg, <(#{58'd0, trap_exc_cause})::xlen_t>) & <(64'd1)::xlen_t> >>
+            let trap_medeleg_bit = (cur_medeleg shr <(#flat{58'd0, trap_exc_cause})::xlen_t>) & <(64'd1)::xlen_t> >>
             let trap_goes_s = cur_priv != priv_lvl_t::PRIV_LVL_M && trap_medeleg_bit == <(64'd1)::xlen_t> >>
             let redirect_target =
                 if int_fire == 1'b1 && int_to_s == 1'b1 {
@@ -1008,7 +1003,7 @@ proc pipeline_core() {
                 } >>
             // ── IF: instruction fetch ─────────────────────────────────────────
             // imem_rdata_q is pre-populated by the harness from host_mem[] (or the
-            // software TLB path) before this clock edge.  The RTL just reads it.
+            // software TLB path) before this clock edge.
             let fetch_instr = *imem_rdata_q >>
             // Fetch exception: page fault (harness-provided) > misalignment.
             let fetch_exc =

@@ -8,7 +8,7 @@
 #   CBNZ    funct5=0x15  rd_int = cap_rf[rs1].valid ? 1 : 0
 #   SCC     funct5=0x01  rd_int = cap_rf[rs1].cursor
 #
-# Test 1: CALL on a LINEAR cap (no redirect; just verifies the type transformation).
+# Test 1: CALL on a LINEAR cap (no redirect; verifies the type transformation).
 # Test 2: RETURN on the resulting SEALED_RET cap with a proper in-code return target
 #         (verifies both the type transformation and the PC redirect).
 

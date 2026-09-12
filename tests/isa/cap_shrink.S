@@ -8,12 +8,7 @@
 #   CBNZ    rd, rs1   funct5=0x15  (rd_int = cap_rf[rs1].valid ? 1 : 0)
 #
 # c1 = root cap: base=0x80000000, end=0x80800000, cursor=0x80000000
-# Plan: create c2=root, CINCOFFSET c3 cursor to 0x80100000, SHRINK c4=intersect(c2,c3)
-# The intersection would fail since c3 is just an offset of c2 with same bounds.
-# Instead: create two caps with different bounds and SHRINK them.
-#
-# Method: use SPLIT to get left half of c2, then SHRINK it against c2.
-# Actually, simpler: SHRINK c4, c2, c2 = c2 (same bounds) → should give c2 back.
+# SHRINK c4, c2, c2 preserves c2's bounds and validity.
 
 #include "riscv_test.h"
 #include "test_macros.h"

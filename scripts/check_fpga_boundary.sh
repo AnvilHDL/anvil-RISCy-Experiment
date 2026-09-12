@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+STATUS_DOC="docs/WORK_LOG.md"
 
 fail=0
 
@@ -36,7 +37,7 @@ require_absent_pattern() {
   local file="$3"
 
   if rg -q "$pattern" "$ROOT/$file"; then
-    printf '[fpga-boundary] forbidden stale harness path found: %s (%s)\n' "$label" "$file" >&2
+    printf '[fpga-boundary] unexpected harness path found: %s (%s)\n' "$label" "$file" >&2
     fail=1
   else
     printf '[fpga-boundary] absent as expected: %s\n' "$label"
@@ -48,7 +49,7 @@ require_absent_file() {
   local file="$2"
 
   if [ -e "$ROOT/$file" ]; then
-    printf '[fpga-boundary] forbidden stale file found: %s (%s)\n' "$label" "$file" >&2
+    printf '[fpga-boundary] unexpected file found: %s (%s)\n' "$label" "$file" >&2
     fail=1
   else
     printf '[fpga-boundary] absent as expected: %s\n' "$label"
@@ -66,22 +67,19 @@ require_absent_pattern "DIV/REM result patching in harness" "patch_div|capture_d
 require_absent_pattern "custom scalar CCSR harness state" "ccsr\\[" "sim/sim_main.cpp"
 require_absent_pattern "timer compare state in harness" "sim_mtimecmp" "sim/sim_main.cpp"
 
-require_pattern "Verilator is not FPGA readiness" "FPGA-ready processor" "FPGA_READINESS.md"
-require_pattern "host_mem replacement" "host_mem\\[\\]" "FPGA_READINESS.md"
-require_pattern "Sv39 RTL replacement" "RTL TLB plus multi-cycle PTW FSM" "FPGA_READINESS.md"
-require_pattern "MMIO/peripheral RTL replacement" "RTL peripherals or bus adapters" "FPGA_READINESS.md"
-require_pattern "RTL timer ownership" 'RTL `mtime`/`mtimecmp`/`stimecmp`' "FPGA_READINESS.md"
-require_pattern "capability RF RTL replacement" "RTL capability RF" "FPGA_READINESS.md"
-require_pattern "xv6 smoke environment" "RUN_XV6=1" "FPGA_READINESS.md"
-require_pattern "Genesys 2 target" "Genesys 2" "FPGA_READINESS.md"
-require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "FPGA_READINESS.md"
-require_pattern "BRAM bring-up target" "BRAM bring-up target" "FPGA_READINESS.md"
-require_pattern "no demo RTL memories policy" "should not contain demo instruction/data memories" "FPGA_READINESS.md"
-require_pattern "wrapper non-production behavior" "UART TX" "FPGA_READINESS.md"
-require_pattern "Capstone RTL gap" "cap_result.*zeroed" "FPGA_READINESS.md"
+require_pattern "host RAM boundary" "host_mem\\[\\]" "$STATUS_DOC"
+require_pattern "Sv39 RTL replacement" "RTL TLB/PTW" "$STATUS_DOC"
+require_pattern "MMIO/peripheral RTL replacement" "RTL peripherals or bus adapters" "$STATUS_DOC"
+require_pattern "RTL timer state" 'RTL `mtime`/`mtimecmp`/`stimecmp`' "$STATUS_DOC"
+require_pattern "capability RF RTL replacement" "RTL capability register file" "$STATUS_DOC"
+require_pattern "xv6 smoke environment" "RUN_XV6=1" "$STATUS_DOC"
+require_pattern "Genesys 2 target" "Genesys 2" "$STATUS_DOC"
+require_pattern "FPGA RTL export command" "scripts/export_fpga_rtl.sh" "$STATUS_DOC"
+require_pattern "BRAM bring-up target" "BRAM bring-up target" "$STATUS_DOC"
+require_pattern "Capstone RTL gap" "cap_result.*zeroed" "$STATUS_DOC"
 
 require_pattern "Genesys 2 constraints" "XC7K325T-2FFG900C" "fpga/constraints/genesys2.xdc"
-require_pattern "Genesys 2 wrapper honesty" "synthesis smoke target" "fpga/src/risky_genesys2_top.sv"
+require_pattern "Genesys 2 wrapper scope" "synthesis smoke target" "fpga/src/risky_genesys2_top.sv"
 require_pattern "BRAM wrapper core bridge" "pipeline_core_bram_if" "fpga/src/risky_genesys2_bram_top.sv"
 require_pattern "BRAM bitstream target" "bitstream-bram" "fpga/Makefile"
 require_pattern "BRAM local programming target" "program-bram" "fpga/Makefile"

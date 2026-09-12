@@ -1,9 +1,8 @@
 import "../../types/pipeline.anvilh"
 import "./fields.anvil"
 
-// Decode maps a raw instruction to a compact control bundle.
-// M1 intentionally recognizes only the subset exercised by the milestone
-// tests and marks the rest illegal so they trap cleanly.
+// Decode maps a raw instruction to a compact control bundle. Unsupported
+// encodings are marked illegal and handled by the trap path.
 
 func ctrl_default() {
     ctrl_sig_t::{

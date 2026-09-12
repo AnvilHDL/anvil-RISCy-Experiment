@@ -1,5 +1,8 @@
 # scripts/ — Build and Test Scripts
 
+The scripts use the active shell environment. Put Anvil in `PATH` or set
+`ANVIL_BIN` to its executable; no machine-specific opam switch is selected.
+
 | Script | Purpose |
 |--------|---------|
 | `build.sh` | Core build: Anvil → SystemVerilog → Verilator → binary |
@@ -37,7 +40,7 @@ build/pipeline_core_program/obj_dir/Vpipeline_core tests/isa/csr.elf 10000 2>&1 
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `ANVIL_BIN` | `anvil` | Path to the Anvil compiler binary |
+| `ANVIL_BIN` | `anvil` | Anvil command or executable path |
 | `ANVIL_FLAGS` | (auto) | Extra flags passed to Anvil (`-O 0 -disable-lt-checks` for pipeline_core) |
 | `BUILD_NAME` | top module name | Output directory name under `build/` |
 | `SIM_MAIN` | `sim/sim_main.cpp` | Harness source file for the Verilator driver |

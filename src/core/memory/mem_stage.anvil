@@ -1,9 +1,8 @@
 import "../../types/pipeline.anvilh"
 import "../top/packet_utils.anvil"
 
-// MEM itself is intentionally thin in M1.
-// The actual memory read/write side effects are computed around this helper;
-// this function just moves the chosen memory data into the MEM/WB packet.
+// Memory side effects are computed by the caller. This helper packages the
+// selected read data for writeback.
 
 func memory_stage(pkt : ex_mem_pkt_t, mem_data : xlen_t) {
     if pkt.valid == 1'b0 {

@@ -10,7 +10,7 @@ WRAPPER_SRC="$ROOT/fpga/src/risky_genesys2_top.sv"
 WRAPPER_OUT="$OUT_DIR/risky_genesys2_top.sv"
 FILELIST="$ROOT/build/fpga/risky_genesys2.f"
 
-: "${ANVIL_BIN:=/home/omar/NUS/Anvil-Experimental/_build/default/bin/main.exe}"
+: "${ANVIL_BIN:=anvil}"
 : "${ANVIL_FLAGS:=-O 0 -disable-lt-checks}"
 : "${ANVIL_VMEM_MB:=12288}"
 : "${ANVIL_TIMEOUT:=20m}"
@@ -24,14 +24,6 @@ run_with_timeout() {
     "$@"
   fi
 }
-
-if [ -f "$HOME/anvil-exp-5.2/.opam-switch/environment" ] || command -v opam >/dev/null 2>&1; then
-  eval "$(opam env --switch=/home/omar/anvil-exp-5.2 --set-switch 2>/dev/null || true)"
-fi
-
-if [ ! -x "$ANVIL_BIN" ]; then
-  ANVIL_BIN="anvil"
-fi
 
 if ! command -v "$ANVIL_BIN" >/dev/null 2>&1 && [ ! -x "$ANVIL_BIN" ]; then
   echo "[fpga-rtl] Anvil compiler not found: $ANVIL_BIN" >&2

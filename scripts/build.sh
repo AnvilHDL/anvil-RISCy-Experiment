@@ -24,20 +24,12 @@ fi
 
 mkdir -p "$BUILD_DIR"
 
-ANVIL_BIN="${ANVIL_BIN:-/home/omar/NUS/Anvil-Experimental/_build/default/bin/main.exe}"
+ANVIL_BIN="${ANVIL_BIN:-anvil}"
 ANVIL_FLAGS="${ANVIL_FLAGS:-}"
 ANVIL_VMEM_MB="${ANVIL_VMEM_MB:-12288}"
 ANVIL_TIMEOUT="${ANVIL_TIMEOUT:-20m}"
 VERILATOR_TIMEOUT="${VERILATOR_TIMEOUT:-30m}"
 MAKE_TIMEOUT="${MAKE_TIMEOUT:-30m}"
-
-if [ -f "$HOME/anvil-exp-5.2/.opam-switch/environment" ] || command -v opam >/dev/null 2>&1; then
-  eval "$(opam env --switch=/home/omar/anvil-exp-5.2 --set-switch 2>/dev/null || true)"
-fi
-
-if [ ! -x "$ANVIL_BIN" ]; then
-  ANVIL_BIN="anvil"
-fi
 
 if [ ! -r "$SRC_FILE" ]; then
   echo "[build] Anvil source not readable: $SRC_FILE" >&2

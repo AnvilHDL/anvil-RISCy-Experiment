@@ -172,7 +172,7 @@ struct instruction_t {
 }
 struct pte_t { 
   reserved : logic [10],
-  ppn : logic [44-1 + 1],
+  ppn : logic [44],
   rsw : logic [2],
   d : logic ,
   a : logic ,
@@ -184,7 +184,7 @@ struct pte_t {
   v : logic 
 }
 struct pte_sv32_t { 
-  ppn : logic [22-1 + 1],
+  ppn : logic [22],
   rsw : logic [2],
   d : logic ,
   a : logic ,

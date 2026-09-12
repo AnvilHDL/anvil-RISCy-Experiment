@@ -41,27 +41,27 @@ func imm_i(instr : instr_t) {
 
 func imm_shamt(instr : instr_t) {
     // RV64 shift-immediate instructions use a zero-extended 6-bit shamt.
-    <(#{58'd0, instr[20+:6]})::xlen_t>
+    <(#flat{58'd0, instr[20+:6]})::xlen_t>
 }
 
 func imm_shamtw(instr : instr_t) {
-    <(#{59'd0, instr[20+:5]})::xlen_t>
+    <(#flat{59'd0, instr[20+:5]})::xlen_t>
 }
 
 func imm_s(instr : instr_t) {
-    call sext12(#{instr[25+:7], instr[7+:5]})
+    call sext12(#flat{instr[25+:7], instr[7+:5]})
 }
 
 func imm_b(instr : instr_t) {
-    call sext13(#{instr[31], instr[7], instr[25+:6], instr[8+:4], 1'b0})
+    call sext13(#flat{instr[31], instr[7], instr[25+:6], instr[8+:4], 1'b0})
 }
 
 func imm_u(instr : instr_t) {
-    call sext32(#{instr[12+:20], 12'd0})
+    call sext32(#flat{instr[12+:20], 12'd0})
 }
 
 func imm_j(instr : instr_t) {
-    call sext21(#{instr[31], instr[12+:8], instr[20], instr[21+:10], 1'b0})
+    call sext21(#flat{instr[31], instr[12+:8], instr[20], instr[21+:10], 1'b0})
 }
 
 func decode_imm(instr : instr_t) {

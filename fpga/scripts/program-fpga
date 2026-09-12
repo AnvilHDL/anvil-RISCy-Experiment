@@ -7,7 +7,7 @@
 #
 set -euo pipefail
 
-VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-/home/omar/Xilinx/2025.2.1/Vivado_Lab/settings64.sh}"
+VIVADO_LAB_SETTINGS="${VIVADO_LAB_SETTINGS:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Prefer the build artifact first so the default always tracks the current tree.
@@ -29,9 +29,9 @@ fi
 
 # Source Vivado Lab if vivado_lab not already in PATH
 if ! command -v vivado_lab &>/dev/null; then
-    if [[ ! -f "$VIVADO_LAB_SETTINGS" ]]; then
-        echo "ERROR: Vivado Lab settings not found at $VIVADO_LAB_SETTINGS" >&2
-        echo "       Set VIVADO_LAB_SETTINGS env var to the correct path." >&2
+    if [[ -z "$VIVADO_LAB_SETTINGS" || ! -f "$VIVADO_LAB_SETTINGS" ]]; then
+        echo "ERROR: vivado_lab is not in PATH" >&2
+        echo "       Set VIVADO_LAB_SETTINGS to the Vivado Lab settings64.sh path." >&2
         exit 1
     fi
     # shellcheck disable=SC1090
