@@ -11,15 +11,22 @@ development and do not yet provide every service used by the simulator.
 
 ## Status
 
-The core builds and runs under Verilator, but the simulation regressions do
-**not** currently pass. `scripts/verify_all.sh` fails at the ISA stage. See
-[the work log](docs/WORK_LOG.md) for the open defect (the pipeline wedges
-permanently on any CSR write, and on some DIV/REM sequences) and for what has
-been verified to work.
+`scripts/verify_all.sh` passes end to end: 21/21 ISA tests, 8/8 freestanding
+C++ programs, the lint and FPGA export checks, and the xv6 smoke test, which
+boots to a shell prompt.
 
-Anvil upstream `master` also needs a compiler fix before the core executes
-correctly; `scripts/toolchain/install_anvil.sh` applies it. See
-[third_party/anvil-patches/](third_party/anvil-patches/).
+Two things are needed to reproduce that, both automated by
+`scripts/toolchain/`:
+
+- Anvil upstream `master` mis-evaluates sized literals, which corrupts
+  constant array indices and generated enum constants. The fix is in
+  [third_party/anvil-patches/](third_party/anvil-patches/).
+- Stock xv6 targets `rv64gc`, which this RV64IMA core does not implement. The
+  ISA, ABI, `NCPU` and `PHYSTOP` changes are in
+  [third_party/xv6-patches/](third_party/xv6-patches/).
+
+See [the work log](docs/WORK_LOG.md) for both, and for the pipeline defect
+that was fixed to get here.
 
 ## Requirements
 
@@ -54,7 +61,6 @@ export PATH="$PWD/.toolchain/riscv/bin:$PATH"
 scripts/build_program_sim.sh
 
 # Run the ISA and freestanding C++ regressions.
-# Currently fails at the ISA stage; see docs/WORK_LOG.md.
 scripts/verify_all.sh
 
 # Run a single ISA test.
@@ -73,16 +79,43 @@ scripts/build_program_sim.sh
 
 Set `ANVIL_VMEM_MB=0` to disable the memory limit.
 
-To include the xv6 smoke test:
+### xv6
+
+Build a kernel and filesystem image that this core can run:
 
 ```bash
-RUN_XV6=1 \
-XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
-XV6_FS_IMG=/path/to/xv6-riscv/fs.img \
-scripts/verify_all.sh
+scripts/toolchain/build_xv6.sh
 ```
 
-The xv6 image is expected to use `NCPU=1` and `PHYSTOP=0x80800000`.
+That clones xv6-riscv into `.toolchain/` and applies
+[third_party/xv6-patches/](third_party/xv6-patches/), which builds for
+`rv64ima_zicsr_zifencei` with `-mabi=lp64` (this core has no compressed
+instructions and no floating point) and sets `NCPU=1` and
+`PHYSTOP=0x80800000`.
+
+Then boot it:
+
+```bash
+XV6_KERNEL="$PWD/.toolchain/xv6-riscv/kernel/kernel" \
+XV6_FS_IMG="$PWD/.toolchain/xv6-riscv/fs.img" \
+XV6_CYCLE_LIMIT=400000000 \
+XV6_HOST_TIMEOUT=900s \
+scripts/run_xv6_smoke.sh
+```
+
+Boot reaches the shell prompt at roughly 81 M cycles, so the default
+`XV6_CYCLE_LIMIT` of 30 M is not enough — it stops partway through `kinit`.
+The console output is:
+
+```
+xv6 kernel is booting
+
+init: starting sh
+$
+```
+
+The same variables work with `RUN_XV6=1 scripts/verify_all.sh` to include the
+smoke test in the full run.
 
 ## Architecture
 
@@ -100,10 +133,8 @@ The core implements RV64I, RV64M, RV64A atomics, M/S/U privilege transitions,
 traps and interrupts, and Sv39. Capability instructions are present as an
 experimental extension.
 
-These are implemented, not currently regression-passing: the ISA and C++
-program suites fail because of the pipeline-wedge defect recorded in the work
-log, and the xv6 boot-to-shell result has not been reproduced since. Treat the
-feature list as the intended scope rather than as a passing test matrix.
+All of the above are exercised by the regressions, which pass, including xv6
+booting to a shell.
 
 The simulation harness currently supplies RAM, the Sv39 page-table walker and
 TLB, MMIO devices, virtio block storage, and part of the capability state.

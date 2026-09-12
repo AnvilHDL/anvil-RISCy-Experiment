@@ -17,7 +17,8 @@ work. Stable setup and usage instructions belong in the repository README files.
 ## 2026-09-12: reproducibility audit against Anvil upstream master
 
 The repository was checked out on a clean machine and every README claim was
-run. Results below; the two defects are open.
+run. Two defects blocked every simulation regression; both are fixed here, and
+`scripts/verify_all.sh` now passes end to end including the xv6 boot.
 
 ### Toolchains
 
@@ -63,99 +64,99 @@ been sent upstream.
 With the patch the register file, forwarding, arithmetic, CSR read/write and
 the `a7 == 93` simulator-exit path all behave correctly.
 
-### Defect 2: pipeline wedges permanently (open)
+### Defect 2: pipeline wedged permanently (fixed)
 
-The pipeline can stop advancing for good, and never reaches the program's
-`ecall`, so `sim_exit_valid_q` never latches and the run burns its whole cycle
-budget. There are two independent triggers; neither involves the other.
+The pipeline could stop advancing for good and never reach the program's
+`ecall`, so `sim_exit_valid_q` never latched and the run burned its whole
+cycle budget. Two triggers, one root cause:
 
-**Trigger A — any CSR write.** Reproducer: `tests/regress/csrw_wedge.S`.
+- **any CSR write whose operand comes from a register**
+  (`tests/regress/csrw_wedge.S`). CSR *reads* were fine, and so were
+  `csrwi`/`csrw x0` — the wedge needed the register dependency.
+- **DIV/REM whose operands are not forwarded from the two preceding
+  instructions** (`tests/regress/div_stall_hang.S`). The divider itself
+  completed correctly; inserting one `nop` before the DIV was enough to wedge.
 
-```
-li t0, 42
-csrw mscratch, t0     # wedges
-```
-
-CSR *reads* are fine: `csrr t1, mscratch` alone retires in ~12 cycles. Every
-CSR write tried wedges (`mtvec`, `mscratch`, `mepc`, `mcause`, `satp`), for
-every immediate value tried, at any distance from the instruction producing
-its operand. This is what stops the ISA tests: their `RVTEST_CODE_BEGIN`
-prologue does `csrw mtvec, t0`, and most of them never divide at all.
-
-**Trigger B — DIV/REM whose operands are not forwarded.** Reproducer:
-`tests/regress/div_stall_hang.S`.
-
-With `div t2, t0, t1` directly after the two `li`s that set its operands the
-program retires in ~79 cycles. Insert one `nop` and it wedges. Traced:
-
-1. The divider runs its 64 iterations and completes normally: `div_busy_q`
-   returns to 0 with `div_count_q == 64`.
-2. During the stall the PC correctly freezes and IF/ID, ID/EX and MEM/WB hold
-   their packets, as the `pipeline_stall` arms of `next_pc` / `next_if_id` /
-   `next_mem_wb` intend.
-3. On release the PC advances `0x80000018 -> 0x8000001c -> 0x80000020` in
-   consecutive cycles, but ID/EX only receives `li a7, 93` then `li a0, 0`.
-   The `ecall` never reaches ID/EX with a valid packet.
-4. The machine then wedges with ID/EX holding `li a0, 0` and MEM/WB holding
-   the DIV. Neither retires, so `a7` and `a0` stay 0.
-
-MUL is unaffected.
-
-**Root cause: the generated event loop deadlocks on a join.**
-
-The wedge is not a pipeline-logic condition. In the wedged state none of the
-documented stall sources is asserted (`div_busy_q == 0`, `sv39_stall_q == 0`,
-`mip == mie == 0` so `int_fire` is false, and the MEM/WB packet carries no
-exception), so `pipeline_stall` and `wb_fire` both evaluate the way a retiring
-instruction needs. Nothing updates anyway, because the Anvil thread has
-stopped scheduling.
-
-Probing the generated event machinery through the wedge:
+**Root cause.** In the wedged state no stall source was asserted
+(`div_busy_q == 0`, `sv39_stall_q == 0`, `mip == mie == 0` so `int_fire` was
+false, no exception in MEM/WB), so `pipeline_stall` and `wb_fire` both
+evaluated the way a retiring instruction needs. Nothing updated anyway,
+because the Anvil thread had stopped scheduling:
 
 ```
 [T 14] ... ev125=1 ev128=0 ev132=0    join130=0
 [T 15] ... ev125=0 ev128=0 ev132=0    join130=1   <- thread stops here
-[T 16] ... ev125=0 ev128=0 ev132=0    join130=1
 ```
 
-The loop closes through
-`EVENTS0[0] <- EVENTS0[133] <- EVENTS0[132] | EVENTS0[130]`, where 132 is the
-boot arm, so steady state depends entirely on `EVENTS0[130]`. That is a join
-of `EVENTS0[129]` and `EVENTS0[125]`, tracked by `_thread_0_event_reg_130_q`.
-At T15 the register latches to 1 — the `EVENTS0[129]` side arrived — and the
-`EVENTS0[125]` side never does. The join never completes, `EVENTS0[133]` never
-fires, and every pipeline register holds its value indefinitely.
+The loop closes through `EVENTS0[0] <- EVENTS0[133] <- EVENTS0[132] |
+EVENTS0[130]`, where 132 is the boot arm, so steady state depends entirely on
+`EVENTS0[130]`. That is a join of `EVENTS0[129]` and `EVENTS0[125]`, tracked
+by `_thread_0_event_reg_130_q`. At T15 the register latched to 1 because only
+the `EVENTS0[129]` side arrived; `EVENTS0[125]` never did, the join never
+completed, and every pipeline register held indefinitely.
 
-`EVENTS0[125]` is fed from `EVENTS0[124]`, the branch carrying the divider and
-CSR register updates, and `EVENTS0[127]`/`EVENTS0[126]` (the register-file
-write arm and its complement) are gated on `wb_fire`. Both triggers therefore
-land on the same structural problem: a control path through the `cycle` body
-that lets one arm of the join retire without the other.
+The two arms came from the one statement-level `if` in the cycle body:
 
-Whether this is a defect in Anvil's scheduling or in how `pipeline_core.anvil`
-structures its conditional `set`s is the open question. It reproduces with the
-patched compiler, so it is independent of defect 1.
+```
+if wb_fire == 1'b1 { set regs_q[cur_mem_wb.rd] := wb_data } else { () };
+```
+
+which the compiler lowers to `EVENTS0[127]` / `EVENTS0[126]`, both gated on
+`wb_fire`.
+
+**Fix.** Write unconditionally and steer suppressed writes at x0, which is
+architecturally hardwired to zero. Every indexed reader of `regs_q` already
+special-cases index 0, and the two direct reads are of x10 and x17, so
+retargeting a suppressed write at x0 is a no-op:
+
+```
+let wb_idx = if wb_fire == 1'b1 { cur_mem_wb.rd } else { <(5'd0)::reg_idx_t> } >>
+let wb_commit = if wb_fire == 1'b1 { wb_data } else { <(64'd0)::xlen_t> } >>
+set regs_q[wb_idx] := wb_commit;
+```
+
+This removes the branch, so the cycle body has a single control path and the
+join cannot half-complete.
 
 ### Current test results
 
-Run with both toolchains from `scripts/toolchain/`:
+Run with the toolchains from `scripts/toolchain/`, `scripts/verify_all.sh`
+passes end to end:
 
 | Check | Result |
 | --- | --- |
 | Shell syntax | pass |
-| FPGA boundary documentation | pass (after the `rg` fix) |
+| FPGA boundary documentation | pass |
 | Simulator build (Anvil + Verilator) | pass |
-| ISA regression | 0/21 — all block on defect 2 (trigger A) |
-| C++ program regression | 0/8 — defect 2 |
+| ISA regression | 21/21 pass |
+| C++ program regression | 8/8 pass |
 | Generated SystemVerilog lint | pass |
 | FPGA RTL export/lint | pass |
 | FPGA BRAM export/lint | pass |
-| xv6 smoke | not run; no kernel or fs.img available on this machine |
+| xv6 smoke | pass — boots to the shell prompt |
 
-The xv6 boot-to-shell claim could not be checked. No `xv6-riscv` tree,
-`kernel` ELF or `fs.img` is present, and `scripts/run_xv6_smoke.sh` requires
-both. Since the ISA suite does not pass, that claim should be treated as
-unverified until defect 2 is fixed and the images are supplied.
+xv6 console output:
+
+```
+xv6 kernel is booting
+
+init: starting sh
+$
+```
+
+Boot reaches `$` at roughly 81 M cycles, so the smoke test needs a raised
+limit; `XV6_CYCLE_LIMIT` defaults to 30 M, which stops during `kinit`'s page
+clearing. Use:
+
+```bash
+XV6_CYCLE_LIMIT=400000000 XV6_HOST_TIMEOUT=900s scripts/run_xv6_smoke.sh
+```
+
+Stock xv6 does not run as shipped: it targets `rv64gc` with the `lp64d` ABI,
+and this core implements RV64IMA with Zicsr/Zifencei, no compressed
+instructions and no floating point. `scripts/toolchain/build_xv6.sh` clones
+xv6 and applies `third_party/xv6-patches/`, which sets the ISA and ABI,
+`NCPU = 1`, and `PHYSTOP = 0x80800000`.
 
 ## Current implementation boundary
 
@@ -209,12 +210,14 @@ scripts/verify_all.sh
 It runs shell syntax checks, a bounded simulator build, ISA tests, C++ program
 tests, the FPGA boundary check, and generated-SystemVerilog lint.
 
-When xv6 artifacts are available:
+With xv6 (build the images first with `scripts/toolchain/build_xv6.sh`):
 
 ```bash
 RUN_XV6=1 \
-XV6_KERNEL=/path/to/xv6-riscv/kernel/kernel \
-XV6_FS_IMG=/path/to/xv6-riscv/fs.img \
+XV6_KERNEL="$PWD/.toolchain/xv6-riscv/kernel/kernel" \
+XV6_FS_IMG="$PWD/.toolchain/xv6-riscv/fs.img" \
+XV6_CYCLE_LIMIT=400000000 \
+VERIFY_XV6_TIMEOUT=900s \
 scripts/verify_all.sh
 ```
 

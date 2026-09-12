@@ -1,0 +1,46 @@
+diff --git a/Makefile b/Makefile
+index af1e7a5..27381ad 100644
+--- a/Makefile
++++ b/Makefile
+@@ -65,7 +65,7 @@ DETFLAGS = -ffile-prefix-map=$(CURDIR)=.
+ 
+ CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+ CFLAGS += $(DETFLAGS)
+-CFLAGS += -march=rv64gc
++CFLAGS += -march=rv64ima_zicsr_zifencei -mabi=lp64
+ CFLAGS += -std=gnu99
+ CFLAGS += -MD
+ CFLAGS += -mcmodel=medany
+@@ -96,7 +96,7 @@ $K/kernel: $(OBJS) $K/kernel.ld
+ 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
+ 
+ $K/%.o: $K/%.S
+-	$(CC) -march=rv64gc -g $(DETFLAGS) -c -o $@ $<
++	$(CC) -march=rv64ima_zicsr_zifencei -mabi=lp64 -g $(DETFLAGS) -c -o $@ $<
+ 
+ tags: $(OBJS)
+ 	etags kernel/*.S kernel/*.c
+diff --git a/kernel/memlayout.h b/kernel/memlayout.h
+index 4f026ed..9e1e9b4 100644
+--- a/kernel/memlayout.h
++++ b/kernel/memlayout.h
+@@ -41,7 +41,7 @@
+ // for use by the kernel and user pages
+ // from physical address 0x80000000 to PHYSTOP.
+ #define KERNBASE 0x80000000L
+-#define PHYSTOP  (KERNBASE + 128 * 1024 * 1024)
++#define PHYSTOP  0x80800000L
+ 
+ // map the trampoline page to the highest address,
+ // in both user and kernel space.
+diff --git a/kernel/param.h b/kernel/param.h
+index 1d69801..e508909 100644
+--- a/kernel/param.h
++++ b/kernel/param.h
+@@ -1,5 +1,5 @@
+ #define NPROC       64                // maximum number of processes
+-#define NCPU        8                 // maximum number of CPUs
++#define NCPU        1                 // maximum number of CPUs
+ #define NOFILE      16                // open files per process
+ #define NFILE       100               // open files per system
+ #define NINODE      50                // maximum number of active i-nodes
