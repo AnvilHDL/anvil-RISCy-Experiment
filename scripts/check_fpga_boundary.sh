@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STATUS_DOC="docs/WORK_LOG.md"
 
+# Prefer ripgrep when present, otherwise fall back to grep so the check does
+# not need an extra tool installed.
+if command -v rg >/dev/null 2>&1; then
+  search() { rg -q "$1" "$2"; }
+else
+  search() { grep -qE "$1" "$2"; }
+fi
+
 fail=0
 
 require_pattern() {
@@ -11,7 +19,7 @@ require_pattern() {
   local pattern="$2"
   local file="$3"
 
-  if rg -q "$pattern" "$ROOT/$file"; then
+  if search "$pattern" "$ROOT/$file"; then
     printf '[fpga-boundary] documented: %s\n' "$label"
   else
     printf '[fpga-boundary] missing documentation for: %s (%s)\n' "$label" "$file" >&2
@@ -23,7 +31,7 @@ require_harness_pattern() {
   local label="$1"
   local pattern="$2"
 
-  if rg -q "$pattern" "$ROOT/sim/sim_main.cpp"; then
+  if search "$pattern" "$ROOT/sim/sim_main.cpp"; then
     printf '[fpga-boundary] simulation-backed present: %s\n' "$label"
   else
     printf '[fpga-boundary] simulation-backed hook not found: %s\n' "$label" >&2
@@ -36,7 +44,7 @@ require_absent_pattern() {
   local pattern="$2"
   local file="$3"
 
-  if rg -q "$pattern" "$ROOT/$file"; then
+  if search "$pattern" "$ROOT/$file"; then
     printf '[fpga-boundary] unexpected harness path found: %s (%s)\n' "$label" "$file" >&2
     fail=1
   else
