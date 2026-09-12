@@ -119,18 +119,52 @@ Five-stage in-order pipeline:
 | MEM | Loads, stores, atomics, alignment, memory exceptions |
 | WB | Register writeback, retirement, traps, redirects |
 
-Implemented: RV64I, RV64M, RV64A atomics, M/S/U privilege transitions, traps
-and interrupts, and Sv39. Capability instructions are present as an
-experimental extension.
+See [Status](#status) for what is implemented and how far each target runs.
 
-The Verilator harness supplies RAM, the Sv39 page-table walker and TLB, MMIO
-devices, virtio block storage, and part of the capability state. These are not
-all available in synthesizable RTL; see [docs/WORK_LOG.md](docs/WORK_LOG.md)
-for the boundary between the two and the open work.
+## Status
 
-## FPGA
+The project is under active development. Simulation is the mature target;
+FPGA bring-up is in progress.
 
-Genesys 2 targets for synthesis checks, BRAM bring-up and DDR integration:
+### Verilator
+
+The simulation target is complete and is what the regressions exercise.
+
+| Item | State |
+| --- | --- |
+| RV64I, RV64M, RV64A | implemented; covered by the ISA tests |
+| M/S/U privilege, traps, interrupts | implemented; covered by the ISA tests |
+| Sv39 paging | implemented; the page-table walk and TLB run in the C++ harness |
+| Capability extension | experimental; 10 of the 21 ISA tests cover it, with `cap_result` currently driven by the harness |
+| ISA tests | 21/21 pass |
+| C++ program tests | 8/8 pass |
+| xv6-riscv | boots to a shell prompt |
+
+The harness supplies RAM, the Sv39 walker and TLB, the MMIO devices (UART,
+PLIC, timer), virtio block storage, and part of the capability state as C++
+models. The regressions therefore exercise the core against that contract; the
+services themselves are being moved into RTL as FPGA bring-up progresses.
+[docs/WORK_LOG.md](docs/WORK_LOG.md) records the current boundary.
+
+### FPGA
+
+Bring-up on the Digilent Genesys 2 (`XC7K325T-2FFG900C`) is in progress. The
+build and lint flows are in place and the BRAM target produces a bitstream;
+running xv6 on the board is the goal being worked towards.
+
+| Area | State |
+| --- | --- |
+| Generated-core synthesis | RTL exports and passes Verilator lint |
+| BRAM bring-up | Builds a bitstream. The payload writes `BOOT\r\nB\r\nL=5A\r\n` over UART and `0x5a` to the GPIO window — a board bring-up program rather than xv6 |
+| DDR/MIG integration | Target and calibration target in place; validating the memory path is the next step |
+| Sv39 in RTL | The core exposes the signals; a synthesizable TLB and page-table walker are still to come |
+| xv6 storage | An FPGA storage or host-bridge path is still to be chosen |
+| Capability datapath | Harness-backed for now; RTL integration pending |
+| Timing closure | To be established once the memory path lands |
+
+The core has not yet been run on hardware. `make -C fpga check` and the lint
+scripts run without Vivado; building a bitstream or programming a board needs
+Vivado with Kintex-7 support.
 
 ```bash
 scripts/lint_fpga_rtl.sh
@@ -141,8 +175,8 @@ make -C fpga bram
 make -C fpga bitstream-bram
 ```
 
-The FPGA targets do not yet provide every service the simulator does. See
-[fpga/README.md](fpga/README.md) for board setup and programming.
+See [fpga/README.md](fpga/README.md) for board setup and programming, and the
+open work list in [docs/WORK_LOG.md](docs/WORK_LOG.md).
 
 ## Repository layout
 
